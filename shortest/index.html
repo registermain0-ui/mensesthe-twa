@@ -3,25 +3,24 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>最短 予約フォーム v2.2 (Debug)</title>
+  <title>最短 予約フォーム v2.3 (Phone Validation Fix)</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    :root { --bg:#0f172a; --card:#111827; --text:#e5e7eb; --muted:#94a3b8; --accent:#22c55e; }
-    body { background:#0b1220; color:var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif; padding: 16px; }
+    body { background:#0b1220; color:#e5e7eb; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif; padding: 16px; }
     .card { background:#111827; border:1px solid #1f2937; border-radius:16px; padding:16px; max-width:520px; margin:0 auto; }
     h2 { margin:0 0 8px; font-size:20px; }
     .field { margin-bottom: 12px; }
     label { display:block; font-weight:600; margin-bottom:6px; color:#d1d5db; }
-    input, select { width: 100%; padding: 12px; border: 1px solid #1f2937; background:#0b1220; color:var(--text); border-radius: 10px; }
+    input, select { width: 100%; padding: 12px; border: 1px solid #1f2937; background:#0b1220; color:#e5e7eb; border-radius: 10px; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .actions { display:flex; gap:10px; align-items:center; }
-    .btn-go { background:var(--accent); color:#052e16; padding:10px 14px; border:0; border-radius:999px; font-weight:700; cursor:pointer; }
+    .btn-go { background:#22c55e; color:#052e16; padding:10px 14px; border:0; border-radius:999px; font-weight:700; cursor:pointer; }
     .status { margin-top:8px; font-size:12px; color:#9ca3af; }
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>最短フォーム (Debug)</h2>
+    <h2>最短フォーム (v2.3)</h2>
     <div class="row">
       <div class="field">
         <label>セラピストID</label>
@@ -57,7 +56,7 @@
       </div>
       <div class="field">
         <label>電話 下4桁（必須）</label>
-        <input id="phoneLast4" placeholder="1234" inputmode="numeric" pattern="\\d{4}">
+        <input id="phoneLast4" placeholder="1234" inputmode="numeric">
       </div>
     </div>
     <div class="field">
@@ -83,9 +82,14 @@
   try { tg?.expand(); tg?.ready(); } catch(e){}
   if (tg) log('Telegram WebApp と接続しました'); else log('⚠️ Telegramアプリから開いてください');
 
+  function toHalfWidth(str) {
+    return str.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0));
+  }
+
   $('send').addEventListener('click', function(){
-    const customerVal = document.getElementById('customer')?.value ?? "(undefined)";
-    const phoneVal = document.getElementById('phoneLast4')?.value ?? "(undefined)";
+    const customerVal = ($('customer').value || "").trim();
+    let phoneVal = ($('phoneLast4').value || "").trim();
+    phoneVal = toHalfWidth(phoneVal);
 
     alert("DEBUG: customer=" + customerVal + " / phoneLast4=" + phoneVal);
 
@@ -93,8 +97,8 @@
       therapistId: $('therapistId').value ?? "",
       start: $('start').value ? new Date($('start').value).toISOString().slice(0,19) : "",
       courseMinutes: parseInt($('course').value || "0", 10),
-      customer: customerVal.trim(),
-      phoneLast4: phoneVal.trim(),
+      customer: customerVal,
+      phoneLast4: phoneVal,
       customerAttr: $('customerAttr').value || "会員",
       isDesignation: ($('designation').value || "true") === 'true'
     };
@@ -103,8 +107,8 @@
       alert('顧客名が未入力です。');
       return;
     }
-    if (!/^\\d{4}$/.test(payload.phoneLast4)) {
-      alert('電話番号下4桁が未入力です。');
+    if (payload.phoneLast4.length !== 4) {
+      alert('電話番号下4桁は4文字で入力してください。');
       return;
     }
 
