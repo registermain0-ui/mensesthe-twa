@@ -3,30 +3,25 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>最短 予約フォーム v2.1</title>
+  <title>最短 予約フォーム v2.2 (Debug)</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    :root { --bg:#0f172a; --card:#111827; --text:#e5e7eb; --muted:#94a3b8; --accent:#22c55e; --btn:#60a5fa; }
+    :root { --bg:#0f172a; --card:#111827; --text:#e5e7eb; --muted:#94a3b8; --accent:#22c55e; }
     body { background:#0b1220; color:var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif; padding: 16px; }
-    .card { background:linear-gradient(180deg,#111827,#0f172a); border:1px solid #1f2937; border-radius:16px; padding:16px; max-width:520px; margin:0 auto; box-shadow:0 10px 30px rgba(0,0,0,.25); }
+    .card { background:#111827; border:1px solid #1f2937; border-radius:16px; padding:16px; max-width:520px; margin:0 auto; }
     h2 { margin:0 0 8px; font-size:20px; }
-    p.desc { margin:0 0 14px; color:var(--muted); font-size:12px; }
     .field { margin-bottom: 12px; }
     label { display:block; font-weight:600; margin-bottom:6px; color:#d1d5db; }
-    input, select { width: 100%; padding: 12px 12px; border: 1px solid #1f2937; background:#0b1220; color:var(--text); border-radius: 10px; }
+    input, select { width: 100%; padding: 12px; border: 1px solid #1f2937; background:#0b1220; color:var(--text); border-radius: 10px; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#0b1220; border:1px solid #1f2937; color:#cbd5e1; font-size:12px; }
     .actions { display:flex; gap:10px; align-items:center; }
-    .btn { padding:10px 14px; border:0; border-radius:999px; font-weight:700; cursor:pointer; }
-    .btn-go { background:var(--accent); color:#052e16; width:120px; }
+    .btn-go { background:var(--accent); color:#052e16; padding:10px 14px; border:0; border-radius:999px; font-weight:700; cursor:pointer; }
     .status { margin-top:8px; font-size:12px; color:#9ca3af; }
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>最短フォーム</h2>
-    <p class="desc">候補からの初期値を読み込みます。必要があれば編集し、<b>顧客名</b>と<b>電話下4桁</b>を入力して送信してください。</p>
-
+    <h2>最短フォーム (Debug)</h2>
     <div class="row">
       <div class="field">
         <label>セラピストID</label>
@@ -37,7 +32,6 @@
         <input id="start" type="datetime-local">
       </div>
     </div>
-
     <div class="row">
       <div class="field">
         <label>コース（分）</label>
@@ -56,7 +50,6 @@
         </select>
       </div>
     </div>
-
     <div class="row">
       <div class="field">
         <label>顧客名（必須）</label>
@@ -67,7 +60,6 @@
         <input id="phoneLast4" placeholder="1234" inputmode="numeric" pattern="\\d{4}">
       </div>
     </div>
-
     <div class="field">
       <label>属性</label>
       <select id="customerAttr">
@@ -75,19 +67,14 @@
         <option value="会員" selected>会員</option>
       </select>
     </div>
-
     <div class="actions">
-      <span id="baseTime" class="pill">基準時刻: 未設定</span>
-      <button id="send" class="btn btn-go">送信</button>
+      <button id="send" class="btn-go">送信</button>
     </div>
-
     <div id="status" class="status"></div>
   </div>
 
 <script>
 (function(){
-  const url = new URL(window.location.href);
-  const qs = Object.fromEntries(url.searchParams.entries());
   const tg = window.Telegram?.WebApp;
   const $ = (id) => document.getElementById(id);
   const status = $('status');
@@ -96,36 +83,22 @@
   try { tg?.expand(); tg?.ready(); } catch(e){}
   if (tg) log('Telegram WebApp と接続しました'); else log('⚠️ Telegramアプリから開いてください');
 
-  function setBaseTime(dt){
-    const pad = (n)=>String(n).padStart(2,'0');
-    const fmt = dt.getFullYear()+'-'+pad(dt.getMonth()+1)+'-'+pad(dt.getDate())+'T'+pad(dt.getHours())+':'+pad(dt.getMinutes());
-    $('start').value = fmt;
-    $('baseTime').textContent = '基準時刻: ' + fmt.replace('T',' ');
-  }
-
-  if (qs.tid) $('therapistId').value = qs.tid;
-  if (qs.start) {
-    const dt = new Date(qs.start);
-    if (!isNaN(dt.valueOf())) setBaseTime(dt);
-  }
-  if (qs.course) $('course').value = String(qs.course);
-
   $('send').addEventListener('click', function(){
+    const customerVal = document.getElementById('customer')?.value ?? "(undefined)";
+    const phoneVal = document.getElementById('phoneLast4')?.value ?? "(undefined)";
+
+    alert("DEBUG: customer=" + customerVal + " / phoneLast4=" + phoneVal);
+
     const payload = {
       therapistId: $('therapistId').value ?? "",
       start: $('start').value ? new Date($('start').value).toISOString().slice(0,19) : "",
       courseMinutes: parseInt($('course').value || "0", 10),
-      customer: ($('customer').value || "").trim(),
-      phoneLast4: ($('phoneLast4').value || "").trim(),
+      customer: customerVal.trim(),
+      phoneLast4: phoneVal.trim(),
       customerAttr: $('customerAttr').value || "会員",
       isDesignation: ($('designation').value || "true") === 'true'
     };
 
-    // デバッグ表示
-    console.log("payload=", payload);
-    alert("入力値: customer=" + payload.customer + " / phoneLast4=" + payload.phoneLast4);
-
-    // 単純バリデーション
     if (payload.customer.length === 0) {
       alert('顧客名が未入力です。');
       return;
@@ -140,7 +113,7 @@
       alert('送信しました。Botのログを確認してください。');
       try { tg.close(); } catch(e){}
     } else {
-      alert('Telegram WebApp コンテキスト外です。ボタンから開いてください。');
+      alert('Telegram WebApp コンテキスト外です。');
     }
   });
 })();
