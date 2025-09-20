@@ -1,130 +1,141 @@
 <!doctype html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>最短フォーム | MensEstheSuite</title>
-  <meta name="color-scheme" content="light dark">
-  <style>
-    :root{--bg:#0b0c0f;--card:#151922;--text:#e7eaf0;--muted:#9aa4b2;--accent:#4da3ff;--ok:#22c55e;--warn:#f59e0b;}
-    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,'Noto Sans JP','Hiragino Kaku Gothic ProN',Meiryo,sans-serif;background:var(--bg);color:var(--text);}
-    .wrap{max-width:640px;margin:0 auto;padding:24px;}
-    .card{background:var(--card);border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:20px;box-shadow:0 6px 24px rgba(0,0,0,.25);}
-    .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px}
-    .title{font-size:20px;font-weight:700;margin:0 0 6px}
-    .muted{color:var(--muted);font-size:13px}
-    .btn{appearance:none;border:1px solid rgba(255,255,255,.12);background:#1f2937;color:#fff;padding:10px 14px;border-radius:12px;cursor:pointer}
-    .btn:hover{filter:brightness(1.08)}
-    .btn:disabled{opacity:.5;cursor:not-allowed}
-    .btn.primary{background:var(--accent);border-color:#2a7bd6}
-    .btn.ok{background:var(--ok);border-color:#16a34a}
-    .field{flex:1;min-width:160px}
-    .input{width:100%;padding:12px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.12);background:#0f1218;color:#fff;font-size:18px;letter-spacing:.2em;text-align:center}
-    .help{font-size:12px;color:var(--muted);margin-top:4px}
-    .pill{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#0f1218;border:1px solid rgba(255,255,255,.12);font-size:12px;color:#cbd5e1}
-    .spacer{height:8px}
-  </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>最短 予約フォーム v2</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root { --bg:#0f172a; --card:#111827; --text:#e5e7eb; --muted:#94a3b8; --accent:#22c55e; --btn:#60a5fa; }
+    body { background:#0b1220; color:var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif; padding: 16px; }
+    .card { background:linear-gradient(180deg,#111827,#0f172a); border:1px solid #1f2937; border-radius:16px; padding:16px; max-width:520px; margin:0 auto; box-shadow:0 10px 30px rgba(0,0,0,.25); }
+    h2 { margin:0 0 8px; font-size:20px; }
+    p.desc { margin:0 0 14px; color:var(--muted); font-size:12px; }
+    .field { margin-bottom: 12px; }
+    label { display:block; font-weight:600; margin-bottom:6px; color:#d1d5db; }
+    input, select { width: 100%; padding: 12px 12px; border: 1px solid #1f2937; background:#0b1220; color:var(--text); border-radius: 10px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .pill { display:inline-block; padding:6px 10px; border-radius:999px; background:#0b1220; border:1px solid #1f2937; color:#cbd5e1; font-size:12px; }
+    .actions { display:flex; gap:10px; align-items:center; }
+    .btn { padding:10px 14px; border:0; border-radius:999px; font-weight:700; cursor:pointer; }
+    .btn-primary { background:var(--btn); color:#0b1220; }
+    .btn-go { background:var(--accent); color:#052e16; width:120px; }
+    .status { margin-top:8px; font-size:12px; color:#9ca3af; }
+  </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="card">
-      <p class="title">最短フォーム</p>
-      <p class="muted">「今すぐ」か、4桁を入力して送信してください。送信後、Bot に <code>web_app_data</code> として渡されます。</p>
+  <div class="card">
+    <h2>最短フォーム</h2>
+    <p class="desc">候補からの初期値を読み込みます。必要があれば編集し、<b>顧客名</b>と<b>電話下4桁</b>を入力して送信してください。</p>
 
-      <div class="row">
-        <button id="btnNow" class="btn primary">今すぐ</button>
-        <span id="baseTimeView" class="pill">基準時刻: 未設定</span>
+    <div class="row">
+      <div class="field">
+        <label>セラピストID</label>
+        <input id="therapistId" placeholder="GUID">
       </div>
-
-      <div class="row">
-        <div class="field">
-          <input id="last4" class="input" inputmode="numeric" autocomplete="one-time-code"
-                 maxlength="4" pattern="\d{4}" placeholder="下4桁" />
-          <div class="help">電話番号の下4桁を半角数字で入力</div>
-        </div>
-        <button id="btnSend" class="btn ok">送信</button>
+      <div class="field">
+        <label>開始時刻</label>
+        <input id="start" type="datetime-local">
       </div>
-
-      <div class="spacer"></div>
-      <p class="muted" id="status">準備完了</p>
     </div>
+
+    <div class="row">
+      <div class="field">
+        <label>コース（分）</label>
+        <select id="course">
+          <option value="60">60</option>
+          <option value="80">80</option>
+          <option value="100" selected>100</option>
+          <option value="120">120</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>指名区分</label>
+        <select id="designation">
+          <option value="false">フリー</option>
+          <option value="true" selected>指名</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>顧客名（必須）</label>
+        <input id="customer" placeholder="山田太郎">
+      </div>
+      <div class="field">
+        <label>電話 下4桁（必須）</label>
+        <input id="phoneLast4" placeholder="1234" inputmode="numeric" pattern="\\d{4}">
+      </div>
+    </div>
+
+    <div class="field">
+      <label>属性</label>
+      <select id="customerAttr">
+        <option value="新規">新規</option>
+        <option value="会員" selected>会員</option>
+      </select>
+    </div>
+
+    <div class="actions">
+      <span id="baseTime" class="pill">基準時刻: 未設定</span>
+      <button id="send" class="btn btn-go">送信</button>
+    </div>
+
+    <div id="status" class="status"></div>
   </div>
 
 <script>
 (function(){
-  const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
-  const $ = (id)=>document.getElementById(id);
-  const state = { baseTimeIso: null };
+  const url = new URL(window.location.href);
+  const qs = Object.fromEntries(url.searchParams.entries());
+  const tg = window.Telegram?.WebApp;
+  const $ = (id) => document.getElementById(id);
+  const status = $('status');
+  function log(s){ status.textContent = s; }
 
-  function setStatus(msg){ $('status').textContent = msg; }
+  // Telegram WebApp コンテキスト
+  try { tg?.expand(); tg?.ready(); } catch(e){}
+  if (tg) log('Telegram WebApp と接続しました'); else log('⚠️ Telegramアプリから開いてください');
 
-  function setBaseNow(){
-    const now = new Date();
-    state.baseTimeIso = now.toISOString();
-    $('baseTimeView').textContent = '基準時刻: 今すぐ (' + now.toLocaleString() + ')';
-    setStatus('基準時刻を「今すぐ」に設定しました');
-    if(tg && tg.HapticFeedback){ try{ tg.HapticFeedback.impactOccurred('light'); }catch(e){} }
-  }
-
-  function validateLast4(v){
-    return /^\d{4}$/.test(v);
-  }
-
-  function send(){
-    const last4 = $('last4').value.trim();
-    if(!validateLast4(last4)){
-      setStatus('下4桁は半角数字4桁で入力してください');
-      alert('下4桁は半角数字4桁で入力してください');
-      return;
+  // 初期値反映
+  if (qs.tid) $('therapistId').value = qs.tid;
+  if (qs.start) {
+    const dt = new Date(qs.start);
+    if (!isNaN(dt.valueOf())) {
+      const pad = (n)=>String(n).padStart(2,'0');
+      const fmt = dt.getFullYear()+'-'+pad(dt.getMonth()+1)+'-'+pad(dt.getDate())+'T'+pad(dt.getHours())+':'+pad(dt.getMinutes());
+      $('start').value = fmt;
+      $('baseTime').textContent = '基準時刻: ' + fmt.replace('T',' ');
     }
-    if(!state.baseTimeIso){
-      // デフォルトは「今すぐ」
-      setBaseNow();
-    }
+  }
+  if (qs.course) $('course').value = String(qs.course);
 
+  // 送信
+  $('send').addEventListener('click', function(){
     const payload = {
-      action: 'shortest',
-      baseTime: state.baseTimeIso,
-      last4: last4,
-      // 将来拡張フィールド（空文字で送る）
-      groupKey: '',
-      version: 'twa-v1'
+      therapistId: $('therapistId').value.trim(),
+      start: $('start').value ? new Date($('start').value).toISOString().slice(0,19) : "",
+      courseMinutes: parseInt($('course').value, 10),
+      customer: $('customer').value.trim(),
+      phoneLast4: $('phoneLast4').value.trim(),
+      customerAttr: $('customerAttr').value,
+      isDesignation: $('designation').value === 'true'
     };
 
-    if(tg){
-      try {
-        tg.ready();
-        tg.expand();
-        tg.sendData(JSON.stringify(payload));
-        setStatus('送信しました。Telegramに戻ってください。');
-        // 送信後に閉じる
-        setTimeout(()=>tg.close(), 300);
-      } catch (e) {
-        console.error(e);
-        setStatus('送信エラー: ' + e.message);
-        alert('送信に失敗しました: ' + e.message);
-      }
-    }else{
-      // テスト用（ブラウザ直アクセス時）
-      console.log('DEV payload', payload);
-      setStatus('（デバッグ）payload を console に出力しました。');
-      alert('Telegram外テスト: ' + JSON.stringify(payload, null, 2));
+    if (!payload.customer || !/^\\d{4}$/.test(payload.phoneLast4)) {
+      alert('必須項目が未入力です（顧客名・電話下4桁）。');
+      return;
     }
-  }
 
-  // イベント結線
-  $('btnNow').addEventListener('click', setBaseNow);
-  $('btnSend').addEventListener('click', send);
-
-  // 初期化表示
-  if(tg){
-    tg.ready();
-    tg.expand();
-    setStatus('Telegram WebApp と接続しました');
-  }else{
-    setStatus('スタンドアロン（デバッグ）モードで起動しました');
-  }
+    if (tg && typeof tg.sendData === 'function') {
+      tg.sendData(JSON.stringify(payload));
+      alert('送信しました。Botのログを確認してください。');
+      try { tg.close(); } catch(e){}
+    } else {
+      alert('Telegram WebApp コンテキスト外です。ボタンから開いてください。');
+    }
+  });
 })();
 </script>
 </body>
