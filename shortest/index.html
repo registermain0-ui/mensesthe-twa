@@ -1,123 +1,159 @@
 <!doctype html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>最短 予約フォーム v2.3 (Phone Validation Fix)</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>最短フォーム (v2.4)</title>
   <style>
-    body { background:#0b1220; color:#e5e7eb; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif; padding: 16px; }
-    .card { background:#111827; border:1px solid #1f2937; border-radius:16px; padding:16px; max-width:520px; margin:0 auto; }
-    h2 { margin:0 0 8px; font-size:20px; }
-    .field { margin-bottom: 12px; }
-    label { display:block; font-weight:600; margin-bottom:6px; color:#d1d5db; }
-    input, select { width: 100%; padding: 12px; border: 1px solid #1f2937; background:#0b1220; color:#e5e7eb; border-radius: 10px; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .actions { display:flex; gap:10px; align-items:center; }
-    .btn-go { background:#22c55e; color:#052e16; padding:10px 14px; border:0; border-radius:999px; font-weight:700; cursor:pointer; }
-    .status { margin-top:8px; font-size:12px; color:#9ca3af; }
+    :root { color-scheme: dark; }
+    body{font-family:system-ui, -apple-system, 'Segoe UI', Roboto, 'Hiragino Kaku Gothic ProN', 'Meiryo', sans-serif;
+         background:#0f172a;color:#e5e7eb;padding:18px;line-height:1.6}
+    .card{max-width:420px;margin:0 auto;background:#111827;border:1px solid #1f2937;border-radius:16px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,.3)}
+    h1{font-size:18px;margin:0 0 8px 0}
+    .row{display:flex;gap:8px;margin-bottom:10px}
+    .row > *{flex:1}
+    label{font-size:12px;color:#9ca3af;display:block;margin-bottom:4px}
+    input,select,button{width:100%;padding:10px;border-radius:10px;border:1px solid #374151;background:#0b1220;color:#e5e7eb}
+    input::placeholder{color:#6b7280}
+    small{color:#9ca3af}
+    .hint{font-size:11px;color:#9ca3af;margin-top:-6px;margin-bottom:8px}
+    .btn{background:#1f2937;border-color:#374151;cursor:pointer}
+    .btn:active{transform:translateY(1px)}
+    .ok{background:#14532d;border-color:#166534}
+    .danger{background:#5b1111;border-color:#7f1d1d}
+    .footer{font-size:11px;color:#9ca3af;margin-top:6px;text-align:center}
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>最短フォーム (v2.3)</h2>
+    <h1>最短フォーム (v2.4)</h1>
+
     <div class="row">
-      <div class="field">
+      <div>
         <label>セラピストID</label>
-        <input id="therapistId" placeholder="GUID">
-      </div>
-      <div class="field">
-        <label>開始時刻</label>
-        <input id="start" type="datetime-local">
+        <input id="therapistId" placeholder="GUID"/>
       </div>
     </div>
+
     <div class="row">
-      <div class="field">
+      <div>
+        <label>開始「時:分」<small>(必須)</small></label>
+        <input id="startTime" type="time" required />
+        <div class="hint">※日付を空のまま送信すると、Botには <b>HH:mm</b> だけを送信します（当日扱い）。</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>日付（任意）</label>
+        <input id="startDate" type="date" />
+        <div class="hint">※日付も指定すると、Botには <b>YYYY-MM-DDTHH:mm:00</b>（ローカル）形式で送信します。</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
         <label>コース（分）</label>
-        <select id="course">
+        <select id="courseMinutes">
           <option value="60">60</option>
           <option value="80">80</option>
           <option value="100" selected>100</option>
           <option value="120">120</option>
         </select>
       </div>
-      <div class="field">
+      <div>
         <label>指名区分</label>
-        <select id="designation">
+        <select id="isDesignation">
+          <option value="true">指名</option>
           <option value="false">フリー</option>
-          <option value="true" selected>指名</option>
         </select>
       </div>
     </div>
+
     <div class="row">
-      <div class="field">
+      <div>
         <label>顧客名（必須）</label>
-        <input id="customer" placeholder="山田太郎">
+        <input id="customer" placeholder="山田太郎" required />
       </div>
-      <div class="field">
+      <div>
         <label>電話 下4桁（必須）</label>
-        <input id="phoneLast4" placeholder="1234" inputmode="numeric">
+        <input id="phoneLast4" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="1234" required />
       </div>
     </div>
-    <div class="field">
-      <label>属性</label>
-      <select id="customerAttr">
-        <option value="新規">新規</option>
-        <option value="会員" selected>会員</option>
-      </select>
+
+    <div class="row">
+      <div>
+        <label>属性</label>
+        <select id="customerAttr">
+          <option value="会員" selected>会員</option>
+          <option value="新規">新規</option>
+          <option value="常連">常連</option>
+        </select>
+      </div>
     </div>
-    <div class="actions">
-      <button id="send" class="btn-go">送信</button>
+
+    <div class="row">
+      <button id="sendBtn" class="btn ok">送信</button>
     </div>
-    <div id="status" class="status"></div>
+
+    <div id="status" class="footer">Telegram WebApp と接続しました</div>
   </div>
 
 <script>
 (function(){
-  const tg = window.Telegram?.WebApp;
-  const $ = (id) => document.getElementById(id);
-  const status = $('status');
-  function log(s){ status.textContent = s; }
-
-  try { tg?.expand(); tg?.ready(); } catch(e){}
-  if (tg) log('Telegram WebApp と接続しました'); else log('⚠️ Telegramアプリから開いてください');
-
-  function toHalfWidth(str) {
-    return str.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0));
+  // Telegram WebApp init
+  const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+  if (tg) {
+    tg.expand();
+    tg.ready();
+    tg.MainButton.hide();
   }
 
-  $('send').addEventListener('click', function(){
-    const customerVal = ($('customer').value || "").trim();
-    let phoneVal = ($('phoneLast4').value || "").trim();
-    phoneVal = toHalfWidth(phoneVal);
+  const $ = id => document.getElementById(id);
+  const status = (s, ok=true) => {
+    const el = $("status");
+    el.textContent = s;
+    el.className = "footer " + (ok ? "" : "danger");
+  };
 
-    alert("DEBUG: customer=" + customerVal + " / phoneLast4=" + phoneVal);
+  // Helpers
+  function buildStartString(dateStr, timeStr){
+    if (!timeStr) return ""; // invalid
+    if (!dateStr) return timeStr; // HH:mm only
+    const pad = n=>String(n).padStart(2,"0");
+    const dt = new Date(dateStr + "T" + timeStr);
+    return dt.getFullYear()+"-"+pad(dt.getMonth()+1)+"-"+pad(dt.getDate())+"T"+pad(dt.getHours())+":"+pad(dt.getMinutes())+":00";
+  }
+
+  $("sendBtn").addEventListener("click", () => {
+    const therapistId = $("therapistId").value.trim();
+    const startDate = $("startDate").value; // optional
+    const startTime = $("startTime").value; // required
+    const start = buildStartString(startDate, startTime);
+
+    const courseMinutes = parseInt($("courseMinutes").value, 10);
+    const customer = $("customer").value.trim();
+    const phoneLast4 = $("phoneLast4").value.trim();
+    const customerAttr = $("customerAttr").value;
+    const isDesignation = $("isDesignation").value === "true";
+
+    if (!start) { status("開始時刻を入力してください（HH:mm）", false); return; }
+    if (!customer || !/\d{4}/.test(phoneLast4)) { status("顧客名と下4桁（4桁数字）は必須です", false); return; }
 
     const payload = {
-      therapistId: $('therapistId').value ?? "",
-      start: $('start').value ? new Date($('start').value).toISOString().slice(0,19) : "",
-      courseMinutes: parseInt($('course').value || "0", 10),
-      customer: customerVal,
-      phoneLast4: phoneVal,
-      customerAttr: $('customerAttr').value || "会員",
-      isDesignation: ($('designation').value || "true") === 'true'
+      therapistId, start, courseMinutes, customer, phoneLast4, customerAttr, isDesignation
     };
 
-    if (payload.customer.length === 0) {
-      alert('顧客名が未入力です。');
-      return;
-    }
-    if (payload.phoneLast4.length !== 4) {
-      alert('電話番号下4桁は4文字で入力してください。');
-      return;
-    }
-
-    if (tg && typeof tg.sendData === 'function') {
-      tg.sendData(JSON.stringify(payload));
-      alert('送信しました。Botのログを確認してください。');
-      try { tg.close(); } catch(e){}
-    } else {
-      alert('Telegram WebApp コンテキスト外です。');
+    try {
+      if (tg) {
+        tg.sendData(JSON.stringify(payload)); // goes to Message.web_app_data
+        status("送信しました。Telegramへ戻ってください。");
+      } else {
+        status("Telegram WebApp が利用できません。", false);
+      }
+    } catch (e) {
+      console.error(e);
+      status("送信エラーが発生しました。", false);
     }
   });
 })();
