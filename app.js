@@ -14,7 +14,7 @@ const COLUMNS       = (24 * 60) / MINUTE_STEP; // 144
 const COURSES       = [60, 80, 100, 120];
 const SEARCH_COURSES = [60, 80, 100, 120, 140, 160, 180]; // 空枠検索用
 
-const APP_VERSION = "M-V9";
+const APP_VERSION = "M-V13";
 
 /* ================= 純粋ロジック(移植) ================= */
 
@@ -113,30 +113,31 @@ function tryFindEarliestSlot(a, blocksIn, nowMin, interval, prep = 15) {
     .map(b => {
       let s = normSpan(b.s), e = normSpan(b.e);
       if (e <= s) e += 24 * 60;
-      return { s, e };
+      return { s, e, hold: !!b.hold };
     })
     .sort((x, y) => x.s - y.s);
 
-  // 状態別基準
+  // 状態別基準(V3.9: 仮押さえはインターバル無しで押し上げ)
   let stateStart;
   const inService = blocks.find(b => b.s <= nowMin && nowMin < b.e);
   if (nowMin < bizStart) {
     const p = nowMin + prep;
     stateStart = p > bizStart ? p : bizStart;
   } else if (inService) {
-    stateStart = inService.e + interval;
+    stateStart = inService.e + (inService.hold ? 0 : interval);
   } else {
     stateStart = nowMin + prep;
     for (const b of blocks) {
-      if (stateStart >= b.s && stateStart < b.e + interval) stateStart = b.e + interval;
+      const guardEnd = b.e + (b.hold ? 0 : interval);
+      if (stateStart >= b.s && stateStart < guardEnd) stateStart = guardEnd;
     }
   }
 
-  // ギャップ探索
-  let prevEnd = bizStart, hasPrev = false;
+  // ギャップ探索(予約はインターバル控除、仮押さえは控除なし)
+  let prevEnd = bizStart, prevHold = false, hasPrev = false;
   for (const b of blocks) {
-    const gapStart = hasPrev ? prevEnd + interval : bizStart;
-    const gapEnd = b.s - interval;
+    const gapStart = hasPrev ? prevEnd + (prevHold ? 0 : interval) : bizStart;
+    const gapEnd = b.s - (b.hold ? 0 : interval);
     const start = Math.max(gapStart, stateStart);
     if (start < gapEnd) {
       const free = Math.floor(gapEnd - start);
@@ -145,9 +146,9 @@ function tryFindEarliestSlot(a, blocksIn, nowMin, interval, prep = 15) {
         return { found: true, startMin: start, maxCourse: max };
       }
     }
-    prevEnd = b.e; hasPrev = true;
+    prevEnd = b.e; prevHold = b.hold; hasPrev = true;
   }
-  let finalStart = hasPrev ? prevEnd + interval : bizStart;
+  let finalStart = hasPrev ? prevEnd + (prevHold ? 0 : interval) : bizStart;
   finalStart = Math.max(finalStart, stateStart);
   if (finalStart < bizEnd) {
     const free = Math.floor(bizEnd - finalStart);
@@ -160,15 +161,16 @@ function tryFindEarliestSlot(a, blocksIn, nowMin, interval, prep = 15) {
 }
 
 /* 空枠検索: 指定コースが入る最初の空きを探す(状態基準は tryFindEarliestSlot と同一)
- * ladder: 最大対応コース算出用の候補リスト
- * 戻り: {found, startMin, maxCourse(そのギャップに入る最大コース)} */
+ * V3.9: 仮押さえ(hold=true)はインターバル無し。maxCourse は検索コースそのものを返す。
+ * ladder引数は表示用(maxTextEx)に残すが、maxCourse算出には使わない。
+ * 戻り: {found, startMin, maxCourse(=courseMin)} */
 function findSlotForCourse(a, blocksIn, nowMin, interval, courseMin, ladder, prep = 15) {
   const { s: bizStart, e: bizEnd } = normAttendance(a);
   const blocks = blocksIn
     .map(b => {
       let s = normSpan(b.s), e = normSpan(b.e);
       if (e <= s) e += 24 * 60;
-      return { s, e };
+      return { s, e, hold: !!b.hold };
     })
     .sort((x, y) => x.s - y.s);
 
@@ -178,39 +180,34 @@ function findSlotForCourse(a, blocksIn, nowMin, interval, courseMin, ladder, pre
     const p = nowMin + prep;
     stateStart = p > bizStart ? p : bizStart;
   } else if (inService) {
-    stateStart = inService.e + interval;
+    stateStart = inService.e + (inService.hold ? 0 : interval);
   } else {
     stateStart = nowMin + prep;
     for (const b of blocks) {
-      if (stateStart >= b.s && stateStart < b.e + interval) stateStart = b.e + interval;
+      const guardEnd = b.e + (b.hold ? 0 : interval);
+      if (stateStart >= b.s && stateStart < guardEnd) stateStart = guardEnd;
     }
   }
 
-  const ladderMax = free => {
-    let m = 0;
-    for (const c of ladder) if (c <= free) m = c;
-    return m;
-  };
-
-  let prevEnd = bizStart, hasPrev = false;
+  let prevEnd = bizStart, prevHold = false, hasPrev = false;
   for (const b of blocks) {
-    const gapStart = hasPrev ? prevEnd + interval : bizStart;
-    const gapEnd = b.s - interval;
+    const gapStart = hasPrev ? prevEnd + (prevHold ? 0 : interval) : bizStart;
+    const gapEnd = b.s - (b.hold ? 0 : interval);
     const start = Math.max(gapStart, stateStart);
     if (start < gapEnd) {
       const free = Math.floor(gapEnd - start);
       if (free >= courseMin) {
-        return { found: true, startMin: start, maxCourse: ladderMax(free) };
+        return { found: true, startMin: start, maxCourse: courseMin };
       }
     }
-    prevEnd = b.e; hasPrev = true;
+    prevEnd = b.e; prevHold = b.hold; hasPrev = true;
   }
-  let finalStart = hasPrev ? prevEnd + interval : bizStart;
+  let finalStart = hasPrev ? prevEnd + (prevHold ? 0 : interval) : bizStart;
   finalStart = Math.max(finalStart, stateStart);
   if (finalStart < bizEnd) {
     const free = Math.floor(bizEnd - finalStart);
     if (free >= courseMin) {
-      return { found: true, startMin: finalStart, maxCourse: ladderMax(free) };
+      return { found: true, startMin: finalStart, maxCourse: courseMin };
     }
   }
   return { found: false, startMin: null, maxCourse: 0 };
@@ -218,14 +215,15 @@ function findSlotForCourse(a, blocksIn, nowMin, interval, courseMin, ladder, pre
 
 /* ラスト枠検索: 指定コースが取れる「一番遅い開始時刻」を探す
  * 下限は最短検索と同じ状態基準(準備時間・施術中・インターバル)を適用
- * 戻り: {found, startMin(最遅開始), maxCourse(そのギャップの最大対応コース)} */
+ * V3.9: 仮押さえ(hold=true)はインターバル無し。maxCourse は検索コースそのものを返す。
+ * 戻り: {found, startMin(最遅開始), maxCourse(=courseMin)} */
 function findLastSlotForCourse(a, blocksIn, nowMin, interval, courseMin, ladder, prep = 15) {
   const { s: bizStart, e: bizEnd } = normAttendance(a);
   const blocks = blocksIn
     .map(b => {
       let s = normSpan(b.s), e = normSpan(b.e);
       if (e <= s) e += 24 * 60;
-      return { s, e };
+      return { s, e, hold: !!b.hold };
     })
     .sort((x, y) => x.s - y.s);
 
@@ -235,21 +233,16 @@ function findLastSlotForCourse(a, blocksIn, nowMin, interval, courseMin, ladder,
     const p = nowMin + prep;
     stateStart = p > bizStart ? p : bizStart;
   } else if (inService) {
-    stateStart = inService.e + interval;
+    stateStart = inService.e + (inService.hold ? 0 : interval);
   } else {
     stateStart = nowMin + prep;
     for (const b of blocks) {
-      if (stateStart >= b.s && stateStart < b.e + interval) stateStart = b.e + interval;
+      const guardEnd = b.e + (b.hold ? 0 : interval);
+      if (stateStart >= b.s && stateStart < guardEnd) stateStart = guardEnd;
     }
   }
 
-  const ladderMax = free => {
-    let m = 0;
-    for (const c of ladder) if (c <= free) m = c;
-    return m;
-  };
-
-  let best = null; // {startMin, maxCourse}
+  let best = null; // {startMin}
   const consider = (gapStart, gapEnd) => {
     const start = Math.max(gapStart, stateStart);
     if (start >= gapEnd) return;
@@ -257,23 +250,22 @@ function findLastSlotForCourse(a, blocksIn, nowMin, interval, courseMin, ladder,
     if (free < courseMin) return;
     const lastStart = gapEnd - courseMin; // このギャップでの最遅開始
     if (!best || lastStart > best.startMin) {
-      best = { startMin: lastStart, maxCourse: ladderMax(free) };
+      best = { startMin: lastStart, maxCourse: courseMin };
     }
   };
 
-  let prevEnd = bizStart, hasPrev = false;
+  let prevEnd = bizStart, prevHold = false, hasPrev = false;
   for (const b of blocks) {
-    const gapStart = hasPrev ? prevEnd + interval : bizStart;
-    const gapEnd = b.s - interval;
+    const gapStart = hasPrev ? prevEnd + (prevHold ? 0 : interval) : bizStart;
+    const gapEnd = b.s - (b.hold ? 0 : interval);
     consider(gapStart, gapEnd);
-    prevEnd = b.e; hasPrev = true;
+    prevEnd = b.e; prevHold = b.hold; hasPrev = true;
   }
-  const finalStart = hasPrev ? prevEnd + interval : bizStart;
+  const finalStart = hasPrev ? prevEnd + (prevHold ? 0 : interval) : bizStart;
   consider(finalStart, bizEnd);
 
   return best ? { found: true, ...best } : { found: false, startMin: null, maxCourse: 0 };
 }
-
 // 最大コース表記(拡張版): ladder指定可。括弧内=上限内、括弧外=空きはあるが上限超過
 function maxTextEx(gapMax, cap, ladder) {
   const hi = Math.min(gapMax, cap);
@@ -346,6 +338,104 @@ function calcTotal(prices, course, ext, discount, opPrice, applyNomFee, nominati
   const nomFee = applyNomFee ? Math.max(0, nominationFee || 0) : 0;
   let total = base + extPrice + op + nomFee - Math.max(0, discount || 0);
   return total < 0 ? 0 : total;
+}
+
+/* ★M-V12: セラピスト送信文生成(PC: SendMessageBuilder と同一仕様・同一出力)
+   変数: {開始}{終了}{分}{コース}{延長}{属性}{顧客名}{下四桁}{金額}{割引}{指名文言}{指名}{セラピスト}{OP}{メモ}
+   ・{金額} = (コース料金+延長料金+指名料) − 割引 (0未満は0・OPは含めない)
+   ・行内の既知変数がすべて空(数値0含む)ならその行を丸ごと省略
+   ・空値の変数は直後の空白(半角/全角)1文字も除去 / 連続空行は1行に / 先頭末尾の空行は除去 */
+function fmtMsgTime(min) { // PC版と同じ「9:30 / 26:30」形式(時は0埋めしない)
+  if (min == null || min < 0) return "";
+  return `${Math.floor(min / 60)}:${String(min % 60).padStart(2, "0")}`;
+}
+function resolveAttrDisplay(rules, attr, nom) {
+  for (const rule of (rules || [])) {
+    if (!rule) continue;
+    const attrOk = !rule.input || rule.input === attr;
+    const nomOk = !rule.nom || rule.nom === nom;
+    if (attrOk && nomOk) return rule.output || "";
+  }
+  return attr;
+}
+function renderSendTemplate(template, vars) {
+  const lines = String(template || "").replace(/\r\n/g, "\n").split("\n");
+  const out = [];
+  for (const line of lines) {
+    // 1周目: 既知変数の有無と空判定
+    let hasVar = false, allEmpty = true;
+    let i = 0;
+    while (i < line.length) {
+      const open = line.indexOf("{", i);
+      if (open < 0) break;
+      const close = line.indexOf("}", open + 1);
+      if (close < 0) break;
+      const name = line.slice(open + 1, close);
+      if (Object.prototype.hasOwnProperty.call(vars, name)) {
+        hasVar = true;
+        if (vars[name] !== "") allEmpty = false;
+      }
+      i = close + 1;
+    }
+    if (hasVar && allEmpty) continue; // 変数がすべて空 → 行ごと省略
+    // 2周目: 置換(空値は直後の空白1文字も除去)
+    let sb = "";
+    i = 0;
+    while (i < line.length) {
+      const open = line.indexOf("{", i);
+      if (open < 0) { sb += line.slice(i); break; }
+      const close = line.indexOf("}", open + 1);
+      if (close < 0) { sb += line.slice(i); break; }
+      sb += line.slice(i, open);
+      const name = line.slice(open + 1, close);
+      if (Object.prototype.hasOwnProperty.call(vars, name)) {
+        sb += vars[name];
+        i = close + 1;
+        if (vars[name] === "" && i < line.length && (line[i] === " " || line[i] === "　")) i++;
+      } else {
+        sb += line.slice(open, close + 1); // 未知の変数は文字通り残す
+        i = close + 1;
+      }
+    }
+    out.push(sb);
+  }
+  // 連続する空行を1行にまとめ、先頭・末尾の空行は除去
+  const collapsed = [];
+  for (const l of out) {
+    if (l === "" && collapsed.length > 0 && collapsed[collapsed.length - 1] === "") continue;
+    collapsed.push(l);
+  }
+  while (collapsed.length > 0 && collapsed[0] === "") collapsed.shift();
+  while (collapsed.length > 0 && collapsed[collapsed.length - 1] === "") collapsed.pop();
+  return collapsed.join("\n");
+}
+function buildTherapistMessage(inp, prices, fmt) {
+  const base = prices.coursePrice[inp.courseMinutes] ?? 0;
+  const unit = Math.max(1, prices.extensionUnitMinutes);
+  const extPrice = Math.floor(Math.max(0, inp.extensionMinutes || 0) / unit) * Math.max(0, prices.extensionUnitPrice);
+  const discount = Math.max(0, inp.discountAmount || 0);
+  let amount = base + extPrice + Math.max(0, inp.nominationFeeApplied || 0) - discount;
+  if (amount < 0) amount = 0;
+  const totalMinutes = Math.max(0, inp.courseMinutes || 0) + Math.max(0, inp.extensionMinutes || 0);
+  const nomPhrase = (fmt.nomPhrases || []).find(m => m.input === (inp.nominationType || ""));
+  const vars = {
+    "開始": fmtMsgTime(inp.start),
+    "終了": fmtMsgTime(inp.end),
+    "分": totalMinutes > 0 ? String(totalMinutes) : "",
+    "コース": inp.courseMinutes > 0 ? String(inp.courseMinutes) : "",
+    "延長": inp.extensionMinutes > 0 ? String(inp.extensionMinutes) : "",
+    "属性": resolveAttrDisplay(fmt.attrMap, inp.customerAttr || "", inp.nominationType || ""),
+    "顧客名": inp.customer || "",
+    "下四桁": inp.phoneLast4 || "",
+    "金額": amount > 0 ? String(amount) : "",
+    "割引": discount > 0 ? String(discount) : "",
+    "指名文言": nomPhrase ? (nomPhrase.output || "") : "",
+    "指名": inp.nominationType || "",
+    "セラピスト": inp.therapistName || "",
+    "OP": inp.opFlag || "",
+    "メモ": inp.memo || ""
+  };
+  return renderSendTemplate(fmt.therapistTemplate, vars);
 }
 
 // 重複検出(PC: FindOverlaps)
@@ -494,6 +584,7 @@ const K = {
   prices: "este.prices",
   discounts: "este.discounts",
   snsFormat: "este.snsFormat",
+  sendFormat: "este.sendFormat", // ★M-V12: 送信文フォーマット(PC V4.0〜と共通・同期対象)
   seq: "este.therapistSeq"
 };
 
@@ -550,6 +641,58 @@ let CFG = null; // 起動時と設定保存時に更新
 function loadDiscounts() { return LS.get(K.discounts, [0, 1000, 2000, 3000, 5000]); }
 function loadSnsFormat() { return LS.get(K.snsFormat, { header: "", footer: "" }); }
 function saveSnsFormat(f) { LS.set(K.snsFormat, f); }
+
+/* ★M-V12: 送信文フォーマット(セラピスト向け)。PC版 V4.0〜 と同一のJSON構造・同一の出力。
+   attrMap: 属性表示ルール [{input:属性, nom:指名, output:表示}] 空欄は任意一致・上から先勝ち
+   nomPhrases: 指名文言 [{input:指名種別, output:文言}] */
+const DEFAULT_SEND_FORMAT = {
+  therapistTemplate:
+    "ご予約いただきまして、\n" +
+    "{開始}〜{分}分\n" +
+    "{属性}　{顧客名}様\n" +
+    "{金額}円+オプション確認お願いします！\n" +
+    "\n" +
+    "{割引}円割引適用になります🙏\n" +
+    "{指名文言}\n" +
+    "よろしくお願いいたします🙏",
+  attrMap: [
+    { input: "", nom: "本", output: "本指名" },
+    { input: "", nom: "姫", output: "姫予約" },
+    { input: "R", nom: "", output: "リピーター" },
+    { input: "N", nom: "", output: "新規" }
+  ],
+  nomPhrases: [
+    { input: "本", output: "本指名様、ありがとうございます！" }
+  ]
+};
+function loadSendFormat() {
+  const raw = LS.get(K.sendFormat, null);
+  const d = JSON.parse(JSON.stringify(DEFAULT_SEND_FORMAT));
+  if (!raw || typeof raw !== "object") return d;
+  const c = {
+    therapistTemplate: typeof raw.therapistTemplate === "string" && raw.therapistTemplate.trim()
+      ? raw.therapistTemplate : d.therapistTemplate,
+    attrMap: Array.isArray(raw.attrMap) ? raw.attrMap : [],
+    nomPhrases: Array.isArray(raw.nomPhrases) ? raw.nomPhrases : []
+  };
+  // 正規化(PC: NormalizeSendFormat と同一): 3項目すべて空の行は除去
+  c.attrMap = c.attrMap
+    .filter(r => r && typeof r === "object")
+    .map(r => ({ input: String(r.input ?? "").trim(), nom: String(r.nom ?? "").trim(), output: String(r.output ?? "").trim() }))
+    .filter(r => r.input !== "" || r.nom !== "" || r.output !== "");
+  c.nomPhrases = c.nomPhrases
+    .filter(m => m && typeof m === "object")
+    .map(m => ({ input: String(m.input ?? "").trim(), output: String(m.output ?? "").trim() }))
+    .filter(m => m.input !== "");
+  // PC V4.0/4.1 の旧初期値(R/Nの2行のみ)なら新初期値へ自動アップグレード(PC: LoadSendFormat と同一)
+  if (c.attrMap.length === 2 &&
+      c.attrMap[0].input === "R" && c.attrMap[0].nom === "" && c.attrMap[0].output === "リピーター" &&
+      c.attrMap[1].input === "N" && c.attrMap[1].nom === "" && c.attrMap[1].output === "新規") {
+    c.attrMap = JSON.parse(JSON.stringify(d.attrMap));
+  }
+  return c;
+}
+function saveSendFormat(f) { LS.set(K.sendFormat, f); touchMeta(K.sendFormat); }
 function nextTherapistId() {
   const n = LS.get(K.seq, 0) + 1; LS.set(K.seq, n); return n;
 }
@@ -661,7 +804,7 @@ function refreshSendBadge() {
 }
 
 /* ================= レンダリング ================= */
-const CELL_W = 22, ROW_H = 56, LEFT_W = 76, HEAD_H = 26;
+const CELL_W = 22, ROW_H = 56, LEFT_W = 96, HEAD_H = 26;
 const X = min => Math.round((min - BIZ_START_MIN) / MINUTE_STEP * CELL_W);
 
 function render() {
@@ -842,68 +985,126 @@ document.getElementById("btnNow").addEventListener("click", () => {
 const attSheet = document.getElementById("attSheet");
 document.getElementById("btnAttendance").addEventListener("click", () => { closeSheets(); openAttendance(); });
 
+/* 出勤登録: 検索して追加方式(M-V10)
+ * 上部の検索(部分一致+あいまい一致)から候補をタップして行を追加する。
+ * 追加済みの行: 名前(固定) / 出勤 / 終了 / エリア / 削除 */
+function attAddedIds() {
+  return new Set([...document.querySelectorAll("#attRows .att-row")]
+    .map(tr => Number(tr.dataset.tid)));
+}
+function attRefreshEmpty() {
+  const empty = document.getElementById("attEmpty");
+  empty.classList.toggle("show", document.querySelectorAll("#attRows .att-row").length === 0);
+}
+function attAddRow(t, cur, focusStart) {
+  const body = document.getElementById("attRows");
+  const tr = document.createElement("div");
+  tr.className = "att-row";
+  tr.dataset.tid = String(t.id);
+  const nm = document.createElement("div");
+  nm.className = "nm-label";
+  nm.textContent = t.name;
+  const s = document.createElement("input");
+  s.placeholder = "出勤"; s.inputMode = "numeric"; s.className = "tm";
+  const e = document.createElement("input");
+  e.placeholder = "終了"; e.inputMode = "numeric"; e.className = "tm";
+  const ar = document.createElement("select");
+  ar.className = "ar";
+  ar.innerHTML = AREAS().map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  if (cur) {
+    s.value = fmtBiz(cur.startMin); e.value = fmtBiz(cur.endMin);
+    if (AREAS().includes(cur.area)) ar.value = cur.area;
+  }
+  [s, e].forEach(inp => inp.addEventListener("blur", () => {
+    const v = parseBizTime(inp.value);
+    if (inp.value.trim() !== "") inp.value = v == null ? inp.value : fmtBiz(v);
+  }));
+  const del = document.createElement("button");
+  del.className = "x-del";
+  del.textContent = "×";
+  del.addEventListener("click", () => {
+    tr.remove();
+    attRefreshEmpty();
+    renderAttSuggestions(); // 候補に戻す
+  });
+  tr.append(nm, s, e, ar, del);
+  body.appendChild(tr);
+  attRefreshEmpty();
+  if (focusStart) s.focus();
+}
+function renderAttSuggestions() {
+  const q = document.getElementById("attSearch").value.trim();
+  const sug = document.getElementById("attSug");
+  if (q === "") { sug.classList.remove("show"); sug.innerHTML = ""; return; }
+  const added = attAddedIds();
+  const hits = state.therapists
+    .filter(t => !added.has(t.id) && therapistMatches(t.name, q))
+    .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase(), "ja"))
+    .slice(0, 8);
+  sug.innerHTML = "";
+  for (const t of hits) {
+    const b = document.createElement("button");
+    b.textContent = t.name;
+    b.addEventListener("click", () => {
+      attAddRow(t, null, true);
+      document.getElementById("attSearch").value = "";
+      renderAttSuggestions();
+    });
+    sug.appendChild(b);
+  }
+  // 完全一致が無ければ新規登録を提示(未追加の同名がいない場合)
+  const exact = state.therapists.some(t => t.name === q);
+  if (!exact) {
+    const b = document.createElement("button");
+    b.className = "new";
+    b.textContent = `＋「${q}」を新規登録して追加`;
+    b.addEventListener("click", () => {
+      const t = {
+        id: nextTherapistId(), name: q, nominationFee: 1000, maxCourse: 120,
+        caution: "", interval: "20", memo: ""
+      };
+      state.therapists.push(t);
+      saveTherapists(state.therapists);
+      attAddRow(t, null, true);
+      document.getElementById("attSearch").value = "";
+      renderAttSuggestions();
+      toast(`${q} を登録しました`);
+    });
+    sug.appendChild(b);
+  }
+  sug.classList.toggle("show", sug.children.length > 0);
+}
+document.getElementById("attSearch").addEventListener("input", renderAttSuggestions);
+
 function openAttendance() {
+  document.getElementById("attSearch").value = "";
+  document.getElementById("attSug").classList.remove("show");
   const body = document.getElementById("attRows");
   body.innerHTML = "";
-  const rows = 21;
-  for (let i = 0; i < rows; i++) {
-    const cur = state.attendance[i];
-    const tr = document.createElement("div");
-    tr.className = "att-row";
-    const sel = document.createElement("select");
-    sel.innerHTML = `<option value=""></option>` + state.therapists
-      .slice().sort((a, b) => a.name.localeCompare(b.name, "ja"))
-      .map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join("");
-    if (cur) sel.value = String(cur.therapistId);
-    const s = document.createElement("input");
-    s.placeholder = "出勤"; s.inputMode = "numeric"; s.className = "tm";
-    const e = document.createElement("input");
-    e.placeholder = "終了"; e.inputMode = "numeric"; e.className = "tm";
-    const ar = document.createElement("select");
-    ar.className = "ar";
-    ar.innerHTML = AREAS().map(v => `<option value="${v}">${v}</option>`).join("");
-    if (cur) {
-      s.value = fmtBiz(cur.startMin); e.value = fmtBiz(cur.endMin);
-      if (AREAS().includes(cur.area)) ar.value = cur.area;
-    }
-    [s, e].forEach(inp => inp.addEventListener("blur", () => {
-      const v = parseBizTime(inp.value);
-      inp.value = v == null ? "" : fmtBiz(v);
-      inp.classList.toggle("err", inp.value === "" && String(inp.dataset.raw || "").trim() !== "");
-    }));
-    tr.append(sel, s, e, ar);
-    body.appendChild(tr);
+  for (const cur of state.attendance) {
+    const t = state.therapists.find(x => x.id === cur.therapistId);
+    if (t) attAddRow(t, cur, false);
   }
+  attRefreshEmpty();
   openSheet(attSheet);
 }
 document.getElementById("attSave").addEventListener("click", () => {
   const out = [];
-  const seen = new Set();
+  const errs = [];
   for (const tr of document.querySelectorAll("#attRows .att-row")) {
-    const [sel, s, e, ar] = tr.children;
-    if (!sel.value) continue;
-    const tid = Number(sel.value);
-    if (seen.has(tid)) { alert("同じセラピストが複数行に選択されています。"); return; }
-    seen.add(tid);
+    const tid = Number(tr.dataset.tid);
+    const [, s, e, ar] = tr.children;
     const sv = parseBizTime(s.value), ev = parseBizTime(e.value);
-    if (sv == null || ev == null) { alert("出勤・終了時刻を入力してください。例: 12:00 / 26:30"); return; }
+    const t = state.therapists.find(x => x.id === tid);
+    const nm = t ? t.name : "?";
+    if (sv == null || ev == null) { errs.push(`${nm}: 出勤・終了時刻を入力してください(例: 1200 / 2630)`); continue; }
     out.push({ therapistId: tid, startMin: sv, endMin: ev, area: ar.value });
   }
+  if (errs.length) { alert(errs.join("\n")); return; }
   state.attendance = out;
   saveAttendance(state.dateKey, out);
   closeSheets();
   render();
-});
-document.getElementById("attAddTherapist").addEventListener("click", () => {
-  const name = prompt("新しいセラピスト名を入力してください");
-  if (!name || !name.trim()) return;
-  const t = {
-    id: nextTherapistId(), name: name.trim(), nominationFee: 1000, maxCourse: 120,
-    caution: "", interval: "20", memo: ""
-  };
-  state.therapists.push(t);
-  saveTherapists(state.therapists);
-  openAttendance(); // 選択肢を更新して再表示
 });
 
 /* ================= 最短取得 ================= */
@@ -967,9 +1168,9 @@ function computeCandidates(baseMin) {
   for (const { t, a } of presentTherapists()) {
     const interval = IV(t);
     const blocks = state.reservations.filter(r => r.therapistId === t.id)
-      .map(r => ({ s: r.start, e: r.end }));
+      .map(r => ({ s: r.start, e: r.end, hold: false }));
     const set = state.holdCells[t.id];
-    if (set && set.size) blocks.push(...holdCellsToRanges(set));
+    if (set && set.size) blocks.push(...holdCellsToRanges(set).map(rg => ({ ...rg, hold: true })));
     const f = tryFindEarliestSlot(a, blocks, baseMin, interval, CFG.calc.prep);
     out.push({
       therapistId: t.id, name: t.name, cap: t.maxCourse ?? 120,
@@ -1072,9 +1273,9 @@ function runSlotSearch() {
     if (slotArea !== "全" && a.area !== slotArea) continue; // エリアフィルタ
     const interval = IV(t);
     const blocks = state.reservations.filter(r => r.therapistId === t.id)
-      .map(r => ({ s: r.start, e: r.end }));
+      .map(r => ({ s: r.start, e: r.end, hold: false }));
     const set = state.holdCells[t.id];
-    if (set && set.size) blocks.push(...holdCellsToRanges(set));
+    if (set && set.size) blocks.push(...holdCellsToRanges(set).map(rg => ({ ...rg, hold: true })));
     const f = slotMode === "last"
       ? findLastSlotForCourse(a, blocks, baseMin, interval, course, SEARCH_COURSES, CFG.calc.prep)
       : findSlotForCourse(a, blocks, baseMin, interval, course, SEARCH_COURSES, CFG.calc.prep);
@@ -1162,6 +1363,11 @@ function openReservationForm(editId, seed) {
 
   document.getElementById("fCustomer").value = r ? r.customer : "";
   document.getElementById("fPhone").value = r ? r.phoneLast4 : "";
+  // ★M-V13: 着信ポップアップで「予約入力に反映」した内容を新規予約に自動入力
+  if (!r && ctiPending && Date.now() - ctiPending.at < 15 * 60 * 1000) {
+    if (ctiPending.name) document.getElementById("fCustomer").value = ctiPending.name;
+    if (ctiPending.last4) document.getElementById("fPhone").value = ctiPending.last4;
+  }
   // 属性・指名・OPの選択肢は設定から生成(編集中の旧値がリストに無い場合も選べるよう追加)
   const attrVals = CFG.attrs.slice();
   if (r && r.customerAttr && !attrVals.includes(r.customerAttr)) attrVals.unshift(r.customerAttr);
@@ -1240,6 +1446,65 @@ document.getElementById("fStart").addEventListener("blur", () => {
   recalcForm();
 });
 
+/* ★M-V12: セラピスト送信文コピー(PC: CopyTherapistMessage と同一仕様) */
+async function copyTextToClipboard(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* フォールバックへ */ }
+  // 旧iOS等向けフォールバック
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed"; ta.style.left = "-9999px"; ta.style.top = "0";
+    ta.setAttribute("readonly", "");
+    document.body.appendChild(ta);
+    ta.select(); ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch { return false; }
+}
+document.getElementById("fCopyTherapist").addEventListener("click", async () => {
+  const startMin = parseBizTime(document.getElementById("fStart").value);
+  if (startMin == null) { alert("開始時刻を入力してください。例: 0930 / 22:00 / 26:30"); return; }
+  const course = Number(document.getElementById("fCourse").value) || null;
+  if (!course) { alert("コース分を選択してください。(60/80/100/120)"); return; }
+  const ext = Number(document.getElementById("fExt").value) || 0;
+  const tid = Number(document.getElementById("fTherapist").value);
+  const t = state.therapists.find(x => x.id === tid);
+  // 指名料の適用判定(recalcForm と同ルール。旧データ互換: 設定に無い「本」は指名料あり)
+  const nomSel = document.getElementById("fNom").value;
+  const nomDef = CFG.nomTypes.find(n => n.name === nomSel);
+  const applyFee = nomDef ? !!nomDef.fee : nomSel === "本";
+  const nominationFee = (applyFee && t) ? Math.max(0, t.nominationFee || 0) : 0;
+  const inp = {
+    start: startMin,
+    end: calcEnd(startMin, course, ext),
+    courseMinutes: course,
+    extensionMinutes: ext,
+    customerAttr: document.getElementById("fAttr").value,
+    customer: document.getElementById("fCustomer").value.trim(),
+    phoneLast4: document.getElementById("fPhone").value.trim(),
+    nominationType: nomSel,
+    therapistName: t ? t.name : "",
+    nominationFeeApplied: nominationFee,
+    discountAmount: Number(document.getElementById("fDiscount").value) || 0,
+    opFlag: document.getElementById("fOp").value,
+    memo: document.getElementById("fMemo").value
+  };
+  const message = buildTherapistMessage(inp, loadPrices(), loadSendFormat());
+  if (!message) { alert("送信文が空になりました。設定の送信フォーマットを確認してください。"); return; }
+  if (await copyTextToClipboard(message)) {
+    toast("送信文をコピーしました");
+  } else {
+    // コピー不能環境では文面を表示して手動コピーしてもらう
+    alert("クリップボードへのコピーに失敗しました。以下を長押しコピーしてください。\n\n" + message);
+  }
+});
+
 document.getElementById("fBack").addEventListener("click", () => formPage.classList.remove("open"));
 
 document.getElementById("fDelete").addEventListener("click", () => {
@@ -1247,6 +1512,7 @@ document.getElementById("fDelete").addEventListener("click", () => {
   if (!confirm("この予約を削除しますか？")) return;
   state.reservations = state.reservations.filter(x => x.id !== formCtx.editId);
   saveReservations(state.dateKey, state.reservations);
+  ctiDeleteVisit(formCtx.editId); // ★M-V13: 顧客履歴側も削除(ベストエフォート)
   dequeueSend(formCtx.editId);
   refreshSendBadge();
   formPage.classList.remove("open");
@@ -1310,6 +1576,9 @@ document.getElementById("fSave").addEventListener("click", () => {
     state.reservations.push(r);
   }
   saveReservations(state.dateKey, state.reservations);
+
+  // ★M-V13: 顧客DBへ来店履歴を自動追記(非同期・失敗しても予約保存には影響しない)
+  ctiRecordVisit(r, state.dateKey);
 
   // 送信待機の登録・反映
   const sc = document.getElementById("fSendC").checked;
@@ -1748,6 +2017,38 @@ function loadSettingsIntoForm() {
   const opWrap = document.getElementById("sOpRows");
   opWrap.innerHTML = "";
   for (const o of CFG.options) addOpRow(o.name, o.price);
+  // ★M-V12: 送信フォーマット
+  const sf = loadSendFormat();
+  document.getElementById("sSendTemplate").value = sf.therapistTemplate;
+  const arWrap = document.getElementById("sAttrRuleRows");
+  arWrap.innerHTML = "";
+  for (const r of sf.attrMap) addAttrRuleRow(r.input, r.nom, r.output);
+  const npWrap = document.getElementById("sNomPhraseRows");
+  npWrap.innerHTML = "";
+  for (const m of sf.nomPhrases) addNomPhraseRow(m.input, m.output);
+}
+/* ★M-V12: 属性表示ルール行(属性/指名/表示) */
+function addAttrRuleRow(attr = "", nom = "", output = "") {
+  const wrap = document.getElementById("sAttrRuleRows");
+  const row = document.createElement("div");
+  row.className = "set-row";
+  row.innerHTML = `<input class="s-sm s-attr" placeholder="属性" value="${esc(attr)}">` +
+    `<input class="s-sm s-nom" placeholder="指名" value="${esc(nom)}">` +
+    `<input class="s-name s-out" placeholder="表示" value="${esc(output)}">` +
+    `<button class="s-del" type="button">×</button>`;
+  row.querySelector(".s-del").addEventListener("click", () => row.remove());
+  wrap.appendChild(row);
+}
+/* ★M-V12: 指名文言行(指名種別/追加文言) */
+function addNomPhraseRow(input = "", output = "") {
+  const wrap = document.getElementById("sNomPhraseRows");
+  const row = document.createElement("div");
+  row.className = "set-row";
+  row.innerHTML = `<input class="s-sm s-nom" placeholder="指名" value="${esc(input)}">` +
+    `<input class="s-name s-out" placeholder="追加文言" value="${esc(output)}">` +
+    `<button class="s-del" type="button">×</button>`;
+  row.querySelector(".s-del").addEventListener("click", () => row.remove());
+  wrap.appendChild(row);
 }
 function addNomRow(name = "", fee = false) {
   const wrap = document.getElementById("sNomRows");
@@ -1771,6 +2072,14 @@ function addOpRow(name = "", price = 0) {
 }
 document.getElementById("sNomAdd").addEventListener("click", () => addNomRow());
 document.getElementById("sOpAdd").addEventListener("click", () => addOpRow());
+// ★M-V12: 送信フォーマットの行追加・テンプレート初期化
+document.getElementById("sAttrRuleAdd").addEventListener("click", () => addAttrRuleRow());
+document.getElementById("sNomPhraseAdd").addEventListener("click", () => addNomPhraseRow());
+document.getElementById("sSendTplReset").addEventListener("click", () => {
+  if (confirm("テンプレートを初期値に戻しますか？")) {
+    document.getElementById("sSendTemplate").value = DEFAULT_SEND_FORMAT.therapistTemplate;
+  }
+});
 
 document.getElementById("setSave").addEventListener("click", () => {
   // 料金
@@ -1827,6 +2136,33 @@ document.getElementById("setSave").addEventListener("click", () => {
   if (isNaN(iv) || iv < 0) { alert("既定インターバルは0以上の数字で入力してください。"); return; }
   if (isNaN(round) || round < 1) { alert("基準時刻の丸め(分)は1以上の数字で入力してください。"); return; }
 
+  // ★M-V12: 送信フォーマット(PC: SettingsDialog と同一の検証)
+  const attrRules = [];
+  for (const row of document.querySelectorAll("#sAttrRuleRows .set-row")) {
+    const attr = row.querySelector(".s-attr").value.trim();
+    const nom = row.querySelector(".s-nom").value.trim();
+    const output = row.querySelector(".s-out").value.trim();
+    if (attr === "" && nom === "" && output === "") continue; // 空行は無視
+    if (attrRules.some(r => r.input === attr && r.nom === nom)) {
+      alert(`属性表示変換: 属性「${attr || "（空欄）"}」×指名「${nom || "（空欄）"}」の行が重複しています。`);
+      return;
+    }
+    attrRules.push({ input: attr, nom, output });
+  }
+  const nomPhrases = [];
+  for (const row of document.querySelectorAll("#sNomPhraseRows .set-row")) {
+    const input = row.querySelector(".s-nom").value.trim();
+    const output = row.querySelector(".s-out").value.trim();
+    if (input === "") continue;
+    if (nomPhrases.some(m => m.input === input)) {
+      alert(`指名文言: 指名種別「${input}」が重複しています。`);
+      return;
+    }
+    nomPhrases.push({ input, output });
+  }
+  let sendTemplate = document.getElementById("sSendTemplate").value.replace(/\r\n/g, "\n");
+  if (!sendTemplate.trim()) sendTemplate = DEFAULT_SEND_FORMAT.therapistTemplate;
+
   const p = loadPrices();
   p.coursePrice = { 60: nums.sp60, 80: nums.sp80, 100: nums.sp100, 120: nums.sp120 };
   p.extensionUnitMinutes = nums.spExtMin;
@@ -1835,6 +2171,8 @@ document.getElementById("setSave").addEventListener("click", () => {
   saveDiscounts(discounts);
   const s = { staffs, attrs, nomTypes, options, areas, calc: { prep, defaultInterval: iv, roundTo: round } };
   saveSettings(s);
+  // ★M-V12: 送信フォーマットの保存(PCと同一のJSON構造)
+  saveSendFormat({ therapistTemplate: sendTemplate, attrMap: attrRules, nomPhrases });
   CFG = loadSettings();
   // 現在の担当がリストから消えていたらリセット
   if (loadCurrentStaff() && !CFG.staffs.includes(loadCurrentStaff())) saveCurrentStaff("");
@@ -1857,6 +2195,7 @@ function collectDataDump() {
     const k = localStorage.key(i);
     if (!k || !k.startsWith("este.")) continue;
     if (k === "este.sync" || k === "este.syncState") continue; // トークン等は預けない
+    if (k === "este.cti" || k === "este.customers" || k === "este.ctiQueue") continue; // ★M-V13: CTI設定(店舗キー)と顧客キャッシュは預けない(顧客DBはFirebase側が本体)
     dump[k] = localStorage.getItem(k);
   }
   return dump;
@@ -1864,7 +2203,7 @@ function collectDataDump() {
 function applyDataDump(dump) {
   // 同期設定以外の este.* を置き換え
   const keep = {};
-  for (const k of ["este.sync", "este.syncState"]) {
+  for (const k of ["este.sync", "este.syncState", "este.cti", "este.customers", "este.ctiQueue"]) {
     const v = localStorage.getItem(k);
     if (v != null) keep[k] = v;
   }
@@ -2127,6 +2466,465 @@ document.getElementById("impFile").addEventListener("change", async e => {
   e.target.value = "";
 });
 
+/* ================= ★M-V13: 着信連携(CTI)+顧客管理 ================= */
+/* 中継: Firebase Realtime Database(REST + EventSource)。SDK不使用でオフライン動作を維持。
+   データ構造: /stores/<店舗キー>/calls/<pushId> = {number, at}
+              /stores/<店舗キー>/customers/<custId> = {name, phone, attr, memo, createdAt, updatedAt, history:{<予約id>:{d,t,c,e,n}}} */
+
+let ctiPending = null; // {name, last4, custId, at} 着信ポップアップ→予約入力への引き継ぎ
+
+function loadCtiConfig() { return LS.get("este.cti", null); }
+function saveCtiConfig(c) { LS.set("este.cti", c); }
+function ctiReady() {
+  const c = loadCtiConfig();
+  return c && c.dbUrl && c.storeKey ? c : null;
+}
+function normalizePhone(s) {
+  let d = String(s || "").replace(/[^\d+]/g, "");
+  if (d.startsWith("+81")) d = "0" + d.slice(3);
+  return d.replace(/[^\d]/g, "");
+}
+function ctiUrl(path, query) {
+  const c = ctiReady();
+  if (!c) return null;
+  const base = c.dbUrl.replace(/\/+$/, "");
+  let u = `${base}/stores/${encodeURIComponent(c.storeKey)}/${path}.json`;
+  if (query) u += "?" + query;
+  return u;
+}
+async function ctiFetch(path, opts, query) {
+  const u = ctiUrl(path, query);
+  if (!u) throw new Error("CTI未設定");
+  const res = await fetch(u, opts);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+/* ---- 顧客キャッシュ(ローカル。本体はFirebase) ---- */
+function loadCustCache() { return LS.get("este.customers", { list: {}, fetchedAt: 0 }); }
+function saveCustCache(c) { LS.set("este.customers", c); }
+async function fetchAllCustomers(force) {
+  const cache = loadCustCache();
+  if (!force && Date.now() - cache.fetchedAt < 60 * 1000) return cache.list; // 60秒スロットル
+  const data = await ctiFetch("customers", { method: "GET" });
+  const list = data || {};
+  saveCustCache({ list, fetchedAt: Date.now() });
+  return list;
+}
+function custVisitStats(cu) {
+  const hist = Object.entries(cu.history || {})
+    .map(([id, h]) => ({ id, ...h }))
+    .sort((a, b) => (a.d || "").localeCompare(b.d || ""));
+  const byT = {};
+  for (const h of hist) { const t = h.t || "?"; byT[t] = (byT[t] || 0) + 1; }
+  const last = hist.length ? hist[hist.length - 1] : null;
+  return { count: hist.length, byT, last, hist };
+}
+function fmtHistLine(h) {
+  const c = h.c ? `${h.c}分` : "";
+  const e = h.e ? `+延長${h.e}` : "";
+  const n = h.n ? `(${h.n})` : "";
+  return `${h.d || "?"}　${h.t || "?"}　${c}${e}${n}`;
+}
+
+/* ---- 着信照合 ---- */
+async function findCustomerByNumber(num) {
+  const n = normalizePhone(num);
+  if (!n) return null;
+  // 1) ローカルキャッシュ
+  const cache = loadCustCache();
+  for (const [id, cu] of Object.entries(cache.list || {})) {
+    if (cu && normalizePhone(cu.phone) === n) return { id, ...cu };
+  }
+  // 2) Firebaseへ問い合わせ(該当1件のみ取得 = 転送量最小)
+  try {
+    const q = `orderBy=${encodeURIComponent('"phone"')}&equalTo=${encodeURIComponent(JSON.stringify(n))}`;
+    const data = await ctiFetch("customers", { method: "GET" }, q);
+    if (data) {
+      const ids = Object.keys(data);
+      if (ids.length) {
+        const cache2 = loadCustCache();
+        cache2.list[ids[0]] = data[ids[0]];
+        saveCustCache(cache2);
+        return { id: ids[0], ...data[ids[0]] };
+      }
+    }
+  } catch (_) { /* オフライン等は未登録扱いで表示 */ }
+  return null;
+}
+
+/* ---- 着信ポップアップ ---- */
+const ctiPop = document.getElementById("ctiPop");
+let ctiPopTimer = null;
+let ctiPopCtx = null; // {number, cust}
+function hideCtiPop() { ctiPop.classList.remove("open"); clearTimeout(ctiPopTimer); ctiPopCtx = null; }
+document.getElementById("cpClose").addEventListener("click", hideCtiPop);
+document.getElementById("cpAction").addEventListener("click", () => {
+  if (!ctiPopCtx) return;
+  const n = normalizePhone(ctiPopCtx.number);
+  if (ctiPopCtx.cust) {
+    ctiPending = { name: ctiPopCtx.cust.name || "", last4: n.slice(-4), custId: ctiPopCtx.cust.id, at: Date.now() };
+    toast("次の新規予約に顧客名・下四桁を自動入力します");
+    hideCtiPop();
+  } else {
+    // 未登録 → 顧客登録シートを番号入りで開く
+    const num = n;
+    hideCtiPop();
+    openCustEdit(null, { phone: num });
+  }
+});
+async function onIncomingCall(number) {
+  const n = normalizePhone(number);
+  const cust = await findCustomerByNumber(n);
+  ctiPopCtx = { number: n, cust };
+  document.getElementById("cpNum").textContent = n || "(番号非通知)";
+  const body = document.getElementById("cpBody");
+  const actBtn = document.getElementById("cpAction");
+  if (cust) {
+    const st = custVisitStats(cust);
+    const byT = Object.entries(st.byT).sort((a, b) => b[1] - a[1]).slice(0, 3)
+      .map(([t, c]) => `${esc(t)}×${c}`).join(" / ");
+    body.innerHTML =
+      `<div class="cp-name">${esc(cust.name || "(名前未設定)")}${cust.attr ? `<span class="cp-attr">${esc(cust.attr)}</span>` : ""}</div>` +
+      `<div class="cp-line">来店 ${st.count}回${byT ? `｜担当別: ${byT}` : ""}</div>` +
+      (st.last ? `<div class="cp-line">前回: ${esc(fmtHistLine(st.last))}</div>` : "") +
+      (cust.memo ? `<div class="cp-memo">${esc(cust.memo)}</div>` : "");
+    actBtn.textContent = "予約入力に反映";
+  } else {
+    body.innerHTML = `<div class="cp-new">未登録の番号です</div>`;
+    actBtn.textContent = "顧客登録";
+  }
+  ctiPop.classList.add("open");
+  clearTimeout(ctiPopTimer);
+  ctiPopTimer = setTimeout(hideCtiPop, 60 * 1000);
+  if (navigator.vibrate) { try { navigator.vibrate(100); } catch (_) {} }
+}
+
+/* ---- 着信ストリーム(EventSource) ---- */
+let ctiES = null;
+let ctiRetry = 0;
+const ctiSeen = new Set();
+const CTI_START = Date.now();
+function startCallStream() {
+  if (ctiES) { ctiES.close(); ctiES = null; }
+  const c = ctiReady();
+  if (!c || typeof EventSource === "undefined") return;
+  const url = ctiUrl("calls", `orderBy=${encodeURIComponent('"$key"')}&limitToLast=1`);
+  const es = new EventSource(url);
+  ctiES = es;
+  const handle = ev => {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (!msg || msg.data == null) return;
+      let entries;
+      if (msg.path === "/") entries = Object.entries(msg.data);           // 初回スナップショット
+      else entries = [[msg.path.replace(/^\//, ""), msg.data]];            // 以後の追加分
+      for (const [id, call] of entries) {
+        if (!call || !call.number || ctiSeen.has(id)) continue;
+        ctiSeen.add(id);
+        const at = Number(call.at) || 0;
+        // アプリ起動の2分以上前の着信は表示しない(古い履歴の再表示防止)
+        if (at && at < CTI_START - 2 * 60 * 1000) continue;
+        onIncomingCall(call.number);
+      }
+    } catch (_) {}
+  };
+  es.addEventListener("put", handle);
+  es.addEventListener("patch", handle);
+  es.onopen = () => { ctiRetry = 0; };
+  es.onerror = () => {
+    es.close();
+    if (ctiES === es) ctiES = null;
+    const wait = Math.min(30000, 2000 * Math.pow(2, ctiRetry++));
+    setTimeout(() => { if (!ctiES) startCallStream(); }, wait);
+  };
+}
+async function cleanupOldCalls() {
+  try {
+    const keys = await ctiFetch("calls", { method: "GET" }, "shallow=true");
+    if (!keys) return;
+    const ids = Object.keys(keys).sort(); // pushIDは時系列順
+    if (ids.length <= 30) return;
+    for (const id of ids.slice(0, ids.length - 20)) {
+      await ctiFetch(`calls/${id}`, { method: "DELETE" });
+    }
+  } catch (_) {}
+}
+
+/* ---- 来店履歴の自動追記(予約保存時) ---- */
+function ctiQueue() { return LS.get("este.ctiQueue", []); }
+function ctiQueueSave(q) { LS.set("este.ctiQueue", q); }
+function ctiRecordVisit(r, dateKey) {
+  if (!ctiReady()) return;
+  const last4 = (r.phoneLast4 || "").trim();
+  if (!/^\d{4}$/.test(last4)) return;
+  // 対象顧客: 着信引き継ぎ(custId)を最優先。無ければ下四桁が一致する顧客がキャッシュ上で1人だけの場合のみ
+  let custId = null;
+  if (ctiPending && ctiPending.custId && ctiPending.last4 === last4) {
+    custId = ctiPending.custId;
+    ctiPending = null; // 使い切り
+  } else {
+    const cache = loadCustCache();
+    const hits = Object.entries(cache.list || {})
+      .filter(([, cu]) => cu && normalizePhone(cu.phone).endsWith(last4));
+    if (hits.length === 1) custId = hits[0][0];
+  }
+  if (!custId) return;
+  const entry = {
+    d: dateKey,
+    t: r.therapistId != null ? ((state.therapists.find(t => t.id === r.therapistId) || {}).name || "") : "",
+    c: r.courseMinutes || 0, e: r.extensionMinutes || 0, n: r.nominationType || ""
+  };
+  const q = ctiQueue();
+  q.push({ op: "put", path: `customers/${custId}/history/${r.id}`, body: entry });
+  ctiQueueSave(q);
+  flushCtiQueue();
+}
+function ctiDeleteVisit(resvId) {
+  if (!ctiReady()) return;
+  const cache = loadCustCache();
+  for (const [id, cu] of Object.entries(cache.list || {})) {
+    if (cu && cu.history && cu.history[resvId]) {
+      const q = ctiQueue();
+      q.push({ op: "delete", path: `customers/${id}/history/${resvId}` });
+      ctiQueueSave(q);
+      delete cu.history[resvId];
+      saveCustCache(cache);
+      flushCtiQueue();
+      return;
+    }
+  }
+}
+let ctiFlushing = false;
+async function flushCtiQueue() {
+  if (ctiFlushing || !ctiReady() || !navigator.onLine) return;
+  ctiFlushing = true;
+  try {
+    let q = ctiQueue();
+    while (q.length) {
+      const job = q[0];
+      if (job.op === "put") {
+        await ctiFetch(job.path, { method: "PUT", body: JSON.stringify(job.body) });
+        // キャッシュにも反映
+        const m = job.path.match(/^customers\/([^/]+)\/history\/(.+)$/);
+        if (m) {
+          const cache = loadCustCache();
+          const cu = cache.list[m[1]];
+          if (cu) { cu.history = cu.history || {}; cu.history[m[2]] = job.body; saveCustCache(cache); }
+        }
+      } else if (job.op === "delete") {
+        await ctiFetch(job.path, { method: "DELETE" });
+      }
+      q.shift();
+      ctiQueueSave(q);
+      q = ctiQueue();
+    }
+  } catch (_) { /* オフライン等: 次回起動/オンライン復帰時に再送 */ }
+  ctiFlushing = false;
+}
+window.addEventListener("online", () => { flushCtiQueue(); if (!ctiES) startCallStream(); });
+
+/* ---- 顧客管理シート ---- */
+const custSheet = document.getElementById("custSheet");
+const custEditSheet = document.getElementById("custEditSheet");
+let custEditId = null;
+document.getElementById("openCustMgmt").addEventListener("click", async () => {
+  closeSheets();
+  if (!ctiReady()) {
+    alert("先に「着信連携設定(CTI)」でFirebaseの接続設定を行ってください。\n(顧客データの保管先として使用します)");
+    return;
+  }
+  openSheet(custSheet);
+  document.getElementById("custSearch").value = "";
+  const st = document.getElementById("custStatus");
+  st.className = "cti-status"; st.textContent = "読み込み中…";
+  try {
+    await fetchAllCustomers(true);
+    const n = Object.keys(loadCustCache().list || {}).length;
+    st.className = "cti-status ok"; st.textContent = `登録顧客: ${n}名(最新)`;
+  } catch (_) {
+    const n = Object.keys(loadCustCache().list || {}).length;
+    st.className = "cti-status ng"; st.textContent = `通信できないため保存済みデータを表示中(${n}名)`;
+  }
+  renderCustList();
+});
+document.getElementById("custSearch").addEventListener("input", renderCustList);
+function renderCustList() {
+  const q = document.getElementById("custSearch").value.trim().toLowerCase();
+  const qNum = normalizePhone(q);
+  const wrap = document.getElementById("custList");
+  const list = Object.entries(loadCustCache().list || {})
+    .map(([id, cu]) => ({ id, ...cu }))
+    .filter(cu => {
+      if (!q) return true;
+      const nameHit = (cu.name || "").toLowerCase().includes(q);
+      const phoneHit = qNum && normalizePhone(cu.phone).includes(qNum);
+      return nameHit || phoneHit;
+    })
+    .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ja"));
+  wrap.innerHTML = "";
+  if (!list.length) {
+    wrap.innerHTML = `<div class="cust-empty">${q ? "一致する顧客がいません" : "右上の「＋新規」から登録してください"}</div>`;
+    return;
+  }
+  for (const cu of list) {
+    const st = custVisitStats(cu);
+    const row = document.createElement("div");
+    row.className = "cust-row";
+    row.innerHTML =
+      `<b>${esc(cu.name || "(名前未設定)")}</b>${cu.attr ? ` <span style="font-size:12px;color:var(--accent);font-weight:700">${esc(cu.attr)}</span>` : ""}` +
+      `<div class="cr-sub">${esc(cu.phone || "番号未登録")}｜来店${st.count}回${st.last ? `｜前回: ${esc(st.last.d || "")} ${esc(st.last.t || "")}` : ""}</div>`;
+    row.addEventListener("click", () => openCustEdit(cu.id));
+    wrap.appendChild(row);
+  }
+}
+document.getElementById("custAdd").addEventListener("click", () => openCustEdit(null));
+function openCustEdit(id, seed) {
+  custEditId = id || null;
+  const cu = id ? loadCustCache().list[id] : null;
+  document.getElementById("ceTitle").childNodes[0].textContent = id ? "顧客編集" : "顧客登録";
+  document.getElementById("ceName").value = cu ? (cu.name || "") : "";
+  document.getElementById("cePhone").value = cu ? (cu.phone || "") : (seed && seed.phone ? seed.phone : "");
+  const attrVals = CFG.attrs.slice();
+  if (cu && cu.attr && !attrVals.includes(cu.attr)) attrVals.unshift(cu.attr);
+  document.getElementById("ceAttr").innerHTML =
+    `<option value=""></option>` + attrVals.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  document.getElementById("ceAttr").value = cu ? (cu.attr || "") : "";
+  document.getElementById("ceMemo").value = cu ? (cu.memo || "") : "";
+  const st = cu ? custVisitStats(cu) : { hist: [] };
+  document.getElementById("ceHist").innerHTML = st.hist.length
+    ? st.hist.slice().reverse().map(h => esc(fmtHistLine(h))).join("<br>")
+    : "履歴なし";
+  document.getElementById("ceDelete").style.display = id ? "block" : "none";
+  closeSheets();
+  openSheet(custEditSheet);
+}
+document.getElementById("ceSave").addEventListener("click", async () => {
+  const name = document.getElementById("ceName").value.trim();
+  const phone = normalizePhone(document.getElementById("cePhone").value);
+  if (!name) { alert("名前を入力してください。"); return; }
+  if (phone && !/^\d{10,11}$/.test(phone)) { alert("電話番号は10〜11桁の数字で入力してください。(未入力も可)"); return; }
+  // 番号の重複チェック(別の顧客に同じ番号)
+  if (phone) {
+    const dup = Object.entries(loadCustCache().list || {})
+      .find(([id, cu]) => id !== custEditId && cu && normalizePhone(cu.phone) === phone);
+    if (dup && !confirm(`同じ番号が「${dup[1].name || "(名前未設定)"}」にも登録されています。\nこのまま保存しますか？`)) return;
+  }
+  const body = {
+    name, phone,
+    attr: document.getElementById("ceAttr").value,
+    memo: document.getElementById("ceMemo").value.trim(),
+    updatedAt: Date.now()
+  };
+  try {
+    if (custEditId) {
+      await ctiFetch(`customers/${custEditId}`, { method: "PATCH", body: JSON.stringify(body) });
+      const cache = loadCustCache();
+      cache.list[custEditId] = { ...(cache.list[custEditId] || {}), ...body };
+      saveCustCache(cache);
+    } else {
+      body.createdAt = Date.now();
+      const res = await ctiFetch("customers", { method: "POST", body: JSON.stringify(body) });
+      const cache = loadCustCache();
+      cache.list[res.name] = body; // res.name = 新規push ID
+      saveCustCache(cache);
+    }
+    toast("保存しました");
+    closeSheets();
+    openSheet(custSheet);
+    renderCustList();
+  } catch (err) {
+    alert("保存に失敗しました(通信環境をご確認ください): " + err.message);
+  }
+});
+document.getElementById("ceDelete").addEventListener("click", async () => {
+  if (!custEditId) return;
+  if (!confirm("この顧客を削除しますか？(来店履歴も消えます)")) return;
+  try {
+    await ctiFetch(`customers/${custEditId}`, { method: "DELETE" });
+    const cache = loadCustCache();
+    delete cache.list[custEditId];
+    saveCustCache(cache);
+    toast("削除しました");
+    closeSheets();
+    openSheet(custSheet);
+    renderCustList();
+  } catch (err) {
+    alert("削除に失敗しました: " + err.message);
+  }
+});
+
+/* ---- CTI設定シート ---- */
+const ctiSheet = document.getElementById("ctiSheet");
+document.getElementById("openCtiConfig").addEventListener("click", () => {
+  closeSheets();
+  const c = loadCtiConfig() || {};
+  document.getElementById("ctDbUrl").value = c.dbUrl || "";
+  document.getElementById("ctStoreKey").value = c.storeKey || "";
+  refreshCtiInfo();
+  openSheet(ctiSheet);
+});
+function refreshCtiInfo() {
+  const c = loadCtiConfig();
+  const info = document.getElementById("ctInfo");
+  info.textContent = c && c.dbUrl && c.storeKey ? "設定済み(着信の待ち受け中)" : "未設定です";
+  document.getElementById("ctMacroUrl").textContent =
+    c && c.dbUrl && c.storeKey
+      ? `${c.dbUrl.replace(/\/+$/, "")}/stores/${c.storeKey}/calls.json`
+      : "—";
+}
+document.getElementById("ctGenKey").addEventListener("click", () => {
+  const buf = new Uint8Array(16);
+  crypto.getRandomValues(buf);
+  document.getElementById("ctStoreKey").value =
+    Array.from(buf, b => b.toString(16).padStart(2, "0")).join("");
+});
+function readCtiForm() {
+  let dbUrl = document.getElementById("ctDbUrl").value.trim().replace(/\/+$/, "");
+  const storeKey = document.getElementById("ctStoreKey").value.trim();
+  if (!/^https:\/\/[^\s/]+\.(firebaseio\.com|firebasedatabase\.app)$/.test(dbUrl)) {
+    alert("データベースURLの形式が違います。\n例: https://xxxx-default-rtdb.firebaseio.com\n(Firebaseコンソール > Realtime Database に表示されるURL)");
+    return null;
+  }
+  if (!/^[A-Za-z0-9_-]{16,}$/.test(storeKey)) {
+    alert("店舗キーは半角英数16文字以上にしてください。「自動生成」の使用を推奨します。");
+    return null;
+  }
+  return { dbUrl, storeKey };
+}
+document.getElementById("ctTest").addEventListener("click", async () => {
+  const c = readCtiForm();
+  if (!c) return;
+  const btn = document.getElementById("ctTest");
+  btn.disabled = true; btn.textContent = "テスト中…";
+  try {
+    const u = `${c.dbUrl}/stores/${encodeURIComponent(c.storeKey)}/ping.json`;
+    let res = await fetch(u, { method: "PUT", body: JSON.stringify(Date.now()) });
+    if (!res.ok) throw new Error(`書き込み失敗 (HTTP ${res.status})`);
+    res = await fetch(u);
+    if (!res.ok) throw new Error(`読み取り失敗 (HTTP ${res.status})`);
+    alert("接続OKです。「保存」を押してください。");
+  } catch (err) {
+    alert("接続に失敗しました: " + err.message + "\n\nURL・Firebaseのルール設定をご確認ください(READMEの「着信連携」参照)。");
+  }
+  btn.disabled = false; btn.textContent = "接続テスト";
+});
+document.getElementById("ctSave").addEventListener("click", () => {
+  const c = readCtiForm();
+  if (!c) return;
+  saveCtiConfig(c);
+  refreshCtiInfo();
+  toast("保存しました。着信の待ち受けを開始します");
+  startCallStream();
+  cleanupOldCalls();
+});
+document.getElementById("ctCopyUrl").addEventListener("click", async () => {
+  const t = document.getElementById("ctMacroUrl").textContent;
+  if (!t || t === "—") { toast("先に設定を保存してください"); return; }
+  if (await copyTextToClipboard(t)) toast("コピーしました(MacroDroidに貼り付け)");
+  else alert("コピーできませんでした。長押しでコピーしてください:\n\n" + t);
+});
+
 /* ================= シート共通・トースト ================= */
 function openSheet(sheet) {
   document.getElementById("sheetBg").classList.add("open");
@@ -2160,6 +2958,15 @@ refreshStaffChip();
 
 // クラウド自動受信(設定済み端末のみ・オフライン時はスキップ)
 setTimeout(autoReceive, 300);
+
+// ★M-V13: 着信の待ち受け開始・未送信の履歴を再送(CTI設定済み端末のみ)
+setTimeout(() => {
+  if (ctiReady()) {
+    startCallStream();
+    flushCtiQueue();
+    cleanupOldCalls();
+  }
+}, 600);
 
 // バージョン表示
 {
