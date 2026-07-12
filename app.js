@@ -14,7 +14,7 @@ const COLUMNS       = (24 * 60) / MINUTE_STEP; // 144
 const COURSES       = [60, 80, 100, 120];
 const SEARCH_COURSES = [60, 80, 100, 120, 140, 160, 180]; // 空枠検索用
 
-const APP_VERSION = "M-V13";
+const APP_VERSION = "M-V13.1";
 
 /* ================= 純粋ロジック(移植) ================= */
 
@@ -1363,7 +1363,7 @@ function openReservationForm(editId, seed) {
 
   document.getElementById("fCustomer").value = r ? r.customer : "";
   document.getElementById("fPhone").value = r ? r.phoneLast4 : "";
-  // ★M-V13: 着信ポップアップで「予約入力に反映」した内容を新規予約に自動入力
+  // ★M-V13.1: 着信詳細の「予約フォームを開く」から引き継いだ顧客を新規予約に自動入力
   if (!r && ctiPending && Date.now() - ctiPending.at < 15 * 60 * 1000) {
     if (ctiPending.name) document.getElementById("fCustomer").value = ctiPending.name;
     if (ctiPending.last4) document.getElementById("fPhone").value = ctiPending.last4;
@@ -1397,6 +1397,7 @@ function openReservationForm(editId, seed) {
 
   document.getElementById("fDelete").style.display = editId ? "block" : "none";
   updateCaution(); recalcForm();
+  updateThInfo(); // ★M-V13.1: 顧客×担当の履歴表示
   formPage.classList.add("open");
 }
 function setPay(v) {
@@ -2553,33 +2554,53 @@ async function findCustomerByNumber(num) {
   return null;
 }
 
-/* ---- 着信ポップアップ ---- */
+/* ---- 着信スタック(連続着信対応)+詳細パネル ---- */
 const ctiPop = document.getElementById("ctiPop");
-let ctiPopTimer = null;
-let ctiPopCtx = null; // {number, cust}
-function hideCtiPop() { ctiPop.classList.remove("open"); clearTimeout(ctiPopTimer); ctiPopCtx = null; }
+const ctiStackEl = document.getElementById("ctiStack");
+let ctiCalls = []; // {id, number, cust, at} 新しい順
+let ctiPopCtx = null; // 詳細表示中の着信
+const CTI_CARD_TTL = 10 * 60 * 1000; // カードは10分で自動消滅
+const CTI_CARD_MAX = 4;
+
+function hideCtiPop() { ctiPop.classList.remove("open"); ctiPopCtx = null; }
 document.getElementById("cpClose").addEventListener("click", hideCtiPop);
-document.getElementById("cpAction").addEventListener("click", () => {
-  if (!ctiPopCtx) return;
-  const n = normalizePhone(ctiPopCtx.number);
-  if (ctiPopCtx.cust) {
-    ctiPending = { name: ctiPopCtx.cust.name || "", last4: n.slice(-4), custId: ctiPopCtx.cust.id, at: Date.now() };
-    toast("次の新規予約に顧客名・下四桁を自動入力します");
-    hideCtiPop();
-  } else {
-    // 未登録 → 顧客登録シートを番号入りで開く
-    const num = n;
-    hideCtiPop();
-    openCustEdit(null, { phone: num });
+
+function fmtClock(ts) {
+  const d = new Date(ts);
+  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+function renderCtiStack() {
+  const now = Date.now();
+  ctiCalls = ctiCalls.filter(c => now - c.at < CTI_CARD_TTL).slice(0, CTI_CARD_MAX);
+  ctiStackEl.innerHTML = "";
+  for (const call of ctiCalls) {
+    const card = document.createElement("div");
+    card.className = "cti-card";
+    const nameHtml = call.cust
+      ? `${esc(call.cust.name || "(名前未設定)")}${call.cust.attr ? `<span class="cp-attr">${esc(call.cust.attr)}</span>` : ""}`
+      : "未登録";
+    card.innerHTML =
+      `<span class="cc-ico">📞</span>` +
+      `<span class="cc-main"><span class="cc-name">${nameHtml}</span><br><span class="cc-num">${esc(call.number || "(番号非通知)")}</span></span>` +
+      `<span class="cc-time">${fmtClock(call.at)}</span>` +
+      `<button class="cc-x" aria-label="閉じる">×</button>`;
+    card.querySelector(".cc-x").addEventListener("click", ev => {
+      ev.stopPropagation();
+      ctiCalls = ctiCalls.filter(c => c.id !== call.id);
+      renderCtiStack();
+    });
+    card.addEventListener("click", () => openCtiDetail(call));
+    ctiStackEl.appendChild(card);
   }
-});
-async function onIncomingCall(number) {
-  const n = normalizePhone(number);
-  const cust = await findCustomerByNumber(n);
-  ctiPopCtx = { number: n, cust };
-  document.getElementById("cpNum").textContent = n || "(番号非通知)";
+}
+setInterval(renderCtiStack, 60 * 1000); // 期限切れカードの掃除
+
+function openCtiDetail(call) {
+  ctiPopCtx = call;
+  document.getElementById("cpNum").textContent = call.number || "(番号非通知)";
   const body = document.getElementById("cpBody");
   const actBtn = document.getElementById("cpAction");
+  const cust = call.cust;
   if (cust) {
     const st = custVisitStats(cust);
     const byT = Object.entries(st.byT).sort((a, b) => b[1] - a[1]).slice(0, 3)
@@ -2589,14 +2610,47 @@ async function onIncomingCall(number) {
       `<div class="cp-line">来店 ${st.count}回${byT ? `｜担当別: ${byT}` : ""}</div>` +
       (st.last ? `<div class="cp-line">前回: ${esc(fmtHistLine(st.last))}</div>` : "") +
       (cust.memo ? `<div class="cp-memo">${esc(cust.memo)}</div>` : "");
-    actBtn.textContent = "予約入力に反映";
+    actBtn.textContent = "予約フォームを開く";
   } else {
     body.innerHTML = `<div class="cp-new">未登録の番号です</div>`;
     actBtn.textContent = "顧客登録";
   }
   ctiPop.classList.add("open");
-  clearTimeout(ctiPopTimer);
-  ctiPopTimer = setTimeout(hideCtiPop, 60 * 1000);
+}
+document.getElementById("cpAction").addEventListener("click", () => {
+  if (!ctiPopCtx) return;
+  const call = ctiPopCtx;
+  const n = normalizePhone(call.number);
+  if (call.cust) {
+    // 顧客に紐付いた予約フォームを直接開く(担当・時刻は仮値。フォームで変更可)
+    const present = presentTherapists();
+    if (!present.length) {
+      alert("先に出勤登録をしてください。(出勤者がいないため予約フォームを開けません)");
+      return;
+    }
+    ctiPending = { name: call.cust.name || "", last4: n.slice(-4), custId: call.cust.id, at: Date.now() };
+    hideCtiPop();
+    ctiCalls = ctiCalls.filter(c => c.id !== call.id);
+    renderCtiStack();
+    openReservationForm(null, {
+      therapistId: present[0].t.id,
+      startMin: defaultBaseMin(state.dateKey, new Date(), CFG.calc.roundTo)
+    });
+  } else {
+    hideCtiPop();
+    ctiCalls = ctiCalls.filter(c => c.id !== call.id);
+    renderCtiStack();
+    openCustEdit(null, { phone: n });
+  }
+});
+async function onIncomingCall(number, callId) {
+  const n = normalizePhone(number);
+  // 同じ番号の連続着信(2分以内の再コール)は既存カードを最新化して重複させない
+  const dup = ctiCalls.find(c => c.number === n && Date.now() - c.at < 2 * 60 * 1000);
+  if (dup) { dup.at = Date.now(); renderCtiStack(); return; }
+  const cust = await findCustomerByNumber(n);
+  ctiCalls.unshift({ id: callId || newGuid(), number: n, cust, at: Date.now() });
+  renderCtiStack();
   if (navigator.vibrate) { try { navigator.vibrate(100); } catch (_) {} }
 }
 
@@ -2625,7 +2679,7 @@ function startCallStream() {
         const at = Number(call.at) || 0;
         // アプリ起動の2分以上前の着信は表示しない(古い履歴の再表示防止)
         if (at && at < CTI_START - 2 * 60 * 1000) continue;
-        onIncomingCall(call.number);
+        onIncomingCall(call.number, id);
       }
     } catch (_) {}
   };
@@ -2723,6 +2777,42 @@ async function flushCtiQueue() {
   ctiFlushing = false;
 }
 window.addEventListener("online", () => { flushCtiQueue(); if (!ctiES) startCallStream(); });
+
+/* ---- 予約フォーム内: 顧客×担当セラピストの履歴表示 (M-V13.1) ---- */
+function formLinkedCustomer() {
+  const last4 = document.getElementById("fPhone").value.trim();
+  if (!/^\d{4}$/.test(last4)) return null;
+  if (ctiPending && ctiPending.custId && ctiPending.last4 === last4) {
+    const cu = loadCustCache().list[ctiPending.custId];
+    if (cu) return { id: ctiPending.custId, ...cu };
+  }
+  const hits = Object.entries(loadCustCache().list || {})
+    .filter(([, cu]) => cu && cu.phone && normalizePhone(cu.phone).endsWith(last4));
+  return hits.length === 1 ? { id: hits[0][0], ...hits[0][1] } : null;
+}
+function updateThInfo() {
+  const box = document.getElementById("fThInfo");
+  if (!ctiReady()) { box.style.display = "none"; return; }
+  const cu = formLinkedCustomer();
+  if (!cu) { box.style.display = "none"; return; }
+  const tid = Number(document.getElementById("fTherapist").value);
+  const t = state.therapists.find(x => x.id === tid);
+  if (!t) { box.style.display = "none"; return; }
+  const st = custVisitStats(cu);
+  const withT = st.hist.filter(h => h.t === t.name);
+  const nm = esc(cu.name || "(名前未設定)");
+  if (withT.length) {
+    const last = withT[withT.length - 1];
+    box.className = "th-info";
+    box.innerHTML = `${nm} × ${esc(t.name)}: 過去 <b>${withT.length}回</b>｜前回 ${esc(fmtHistLine(last))}`;
+  } else {
+    box.className = "th-info first";
+    box.innerHTML = `${nm} は ${esc(t.name)} への指名は<b>初めて</b>です(来店${st.count}回)`;
+  }
+  box.style.display = "block";
+}
+document.getElementById("fTherapist").addEventListener("change", updateThInfo);
+document.getElementById("fPhone").addEventListener("input", updateThInfo);
 
 /* ---- 顧客管理シート ---- */
 const custSheet = document.getElementById("custSheet");

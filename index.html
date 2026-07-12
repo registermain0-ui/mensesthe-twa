@@ -134,7 +134,16 @@
   .cau-body{padding:8px 14px}
   .cau-body textarea{width:100%;height:110px;border:1px solid #bbb;border-radius:8px;padding:10px;font-size:15px;resize:none}
 
-  /* ===== M-V13: 着信ポップアップ・顧客管理 ===== */
+  /* ===== M-V13.1: 着信スタック(連続着信対応)+詳細パネル ===== */
+  .cti-stack{position:fixed;left:8px;right:8px;top:calc(env(safe-area-inset-top) + 8px);z-index:59;display:flex;flex-direction:column;gap:6px;pointer-events:none}
+  .cti-card{pointer-events:auto;display:flex;align-items:center;gap:8px;background:#fff;border:2px solid var(--accent);border-radius:10px;box-shadow:0 4px 14px rgba(0,0,0,.22);padding:8px 10px}
+  .cti-card .cc-ico{font-size:16px;flex:none}
+  .cti-card .cc-main{flex:1;min-width:0}
+  .cti-card .cc-num{font-size:13px;font-weight:700;letter-spacing:.3px}
+  .cti-card .cc-name{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cti-card .cc-name .cp-attr{display:inline-block;font-size:10px;font-weight:700;color:#fff;background:var(--accent);border-radius:4px;padding:0 5px;margin-left:5px;vertical-align:1px}
+  .cti-card .cc-time{flex:none;font-size:11px;color:var(--sub)}
+  .cti-card .cc-x{flex:none;border:none;background:none;font-size:18px;color:var(--sub);padding:2px 6px}
   .cti-pop{position:fixed;left:8px;right:8px;top:calc(env(safe-area-inset-top) + 8px);z-index:60;
     background:#fff;border:2px solid var(--accent);border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.28);
     padding:12px 14px;display:none}
@@ -150,6 +159,8 @@
   .cti-pop .cp-btns{display:flex;gap:8px;margin-top:10px}
   .cti-pop .cp-btns button{flex:1;border:1px solid #bbb;background:#fff;border-radius:8px;padding:10px 4px;font-size:14px}
   .cti-pop .cp-btns button.main{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
+  .th-info{display:none;font-size:12.5px;line-height:1.6;border-radius:6px;padding:7px 9px;margin:-4px 0 12px;background:#eef4fb;color:#1a4b8a;border:1px solid #c4d8f0}
+  .th-info.first{background:#fff7e8;color:#8a5a00;border-color:#ecd9ae}
   .cust-bar{display:flex;gap:8px;padding:8px 14px 4px}
   .cust-bar input{flex:1;border:1px solid #bbb;border-radius:8px;padding:9px 10px;font-size:15px}
   .cust-bar button{flex:none;border:1px solid var(--accent);color:var(--accent);background:#fff;border-radius:8px;padding:0 14px;font-size:14px;font-weight:700}
@@ -502,12 +513,15 @@
   </div>
 </div>
 
-<!-- ★M-V13: 着信ポップアップ -->
+<!-- ★M-V13.1: 着信スタック(連続着信対応) -->
+<div class="cti-stack" id="ctiStack"></div>
+
+<!-- ★M-V13.1: 着信詳細パネル(カードをタップで表示) -->
 <div class="cti-pop" id="ctiPop">
   <div class="cp-head"><span class="cp-ico">📞</span><span class="cp-num" id="cpNum">—</span></div>
   <div id="cpBody"></div>
   <div class="cp-btns">
-    <button id="cpAction" class="main">予約入力に反映</button>
+    <button id="cpAction" class="main">予約フォームを開く</button>
     <button id="cpClose">閉じる</button>
   </div>
 </div>
@@ -534,6 +548,7 @@
   <div class="form-body">
     <div class="caution" id="fCaution"></div>
     <div class="fg"><label>指名セラピスト</label><select id="fTherapist"></select></div>
+    <div class="th-info" id="fThInfo"></div>
     <div class="fg-row">
       <div class="fg"><label>開始時間</label><input id="fStart" inputmode="numeric" placeholder="例 2130 / 26:30"></div>
       <div class="fg"><label>コース(分)</label><select id="fCourse"></select></div>
