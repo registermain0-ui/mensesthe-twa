@@ -8,7 +8,7 @@
 <meta name="theme-color" content="#2c5fb3">
 <link rel="manifest" href="./manifest.json">
 <link rel="apple-touch-icon" href="./icons/icon-180.png">
-<title>サロン受付 M-V12</title>
+<title>サロン受付 M-V13</title>
 <style>
   :root{
     --resA-fill:#EEE8FA; --resA-border:#8854D0;
@@ -89,6 +89,8 @@
   .cand td{padding:12px 4px;text-align:center;border-bottom:1px solid #eee}
   .cand tr.ok:active{background:#eef4ff}
   .cand tr.ng td{color:#aaa}
+  .cand-sns-btn{border:1px dashed #999;background:#fff;color:var(--sub);border-radius:6px;padding:5px 6px;font-size:11px;max-width:78px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cand-sns-btn.set{border-style:solid;border-color:var(--accent);color:var(--accent)}
   .sns{border-top:1px solid #ddd;padding:8px 14px 12px;flex:none}
   .sns textarea{width:100%;height:76px;border:1px solid #ccc;border-radius:6px;font-size:12px;padding:6px;resize:none;color:#444}
   .sns .r{display:flex;gap:8px;justify-content:flex-end;margin-top:6px}
@@ -99,10 +101,32 @@
   .att-head{display:flex;gap:6px;font-size:12px;color:var(--sub);padding:4px 0}
   .att-head span:first-child{flex:1}
   .att-head span{width:76px;text-align:center}
-  .att-row{display:flex;gap:6px;margin-bottom:6px}
+  .att-row{display:flex;gap:6px;margin-bottom:4px}
   .att-row select{flex:1;border:1px solid #bbb;border-radius:6px;padding:9px 6px;font-size:14px;background:#fff;min-width:0}
   .att-row input.tm{width:76px;border:1px solid #bbb;border-radius:6px;padding:9px 4px;font-size:14px;text-align:center;flex:none}
   .att-row input.err{border-color:#d32f2f}
+  .att-entry{margin-bottom:8px}
+  .att-sns{width:100%;border:1px solid #ccc;border-radius:6px;padding:7px 8px;font-size:12.5px;color:#444;background:#fbfbfb}
+  /* ★M-V13: 精算画面 */
+  .sz-card{border:1px solid #ddd;border-radius:10px;padding:12px;margin-bottom:14px;background:#fafafa}
+  .sz-card h4{margin:0 0 10px;font-size:15px;display:flex;justify-content:space-between;align-items:center}
+  .sz-card h4 .x-del{margin-left:8px}
+  .sz-row{display:flex;gap:8px;margin-bottom:8px}
+  .sz-row .fg{flex:1;margin-bottom:0}
+  .sz-rate-note{font-size:11px;color:var(--sub);margin:-4px 0 8px}
+  .sz-res-head{display:flex;gap:6px;font-size:11px;color:var(--sub);padding:2px 0;border-bottom:1px solid #eee}
+  .sz-res-row{display:flex;gap:6px;align-items:center;padding:6px 0;border-bottom:1px solid #eee;font-size:13px}
+  .sz-res-row .sz-r-info{flex:1;min-width:0}
+  .sz-res-row .sz-r-dep{width:88px;border:1px solid #bbb;border-radius:6px;padding:6px 4px;font-size:13px;text-align:right}
+  .sz-res-row .sz-r-dep.mismatch{border-color:#d32f2f;background:#fff0f0}
+  .sz-r-expect{font-size:10px;color:#d32f2f;display:block}
+  .sz-empty-res{font-size:12px;color:var(--sub);padding:8px 0}
+  .sz-result{margin-top:10px;padding:10px;background:#fff;border:1px solid #eee;border-radius:8px;font-size:13px;line-height:1.9}
+  .sz-result b{font-size:15px}
+  .sz-alert{color:#d32f2f;font-weight:bold;margin-top:4px}
+  .sz-err{color:#d32f2f;font-size:12px;margin-top:4px}
+  .sz-btns{display:flex;gap:8px;margin-top:10px}
+  .sz-btns button{flex:1}
   .sheet-foot{flex:none;display:flex;gap:10px;padding:10px 14px;border-top:1px solid #ddd}
   .sheet-foot .sub{border:1px solid #bbb;background:#fff;border-radius:8px;padding:11px 14px;font-size:14px}
   .sheet-foot .main{flex:1;border:none;background:var(--accent);color:#fff;border-radius:8px;padding:11px;font-size:15px;font-weight:700}
@@ -133,47 +157,6 @@
   /* 注意点編集 */
   .cau-body{padding:8px 14px}
   .cau-body textarea{width:100%;height:110px;border:1px solid #bbb;border-radius:8px;padding:10px;font-size:15px;resize:none}
-
-  /* ===== M-V13.1: 着信スタック(連続着信対応)+詳細パネル ===== */
-  .cti-stack{position:fixed;left:8px;right:8px;top:calc(env(safe-area-inset-top) + 8px);z-index:59;display:flex;flex-direction:column;gap:6px;pointer-events:none}
-  .cti-card{pointer-events:auto;display:flex;align-items:center;gap:8px;background:#fff;border:2px solid var(--accent);border-radius:10px;box-shadow:0 4px 14px rgba(0,0,0,.22);padding:8px 10px}
-  .cti-card .cc-ico{font-size:16px;flex:none}
-  .cti-card .cc-main{flex:1;min-width:0}
-  .cti-card .cc-num{font-size:13px;font-weight:700;letter-spacing:.3px}
-  .cti-card .cc-name{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .cti-card .cc-name .cp-attr{display:inline-block;font-size:10px;font-weight:700;color:#fff;background:var(--accent);border-radius:4px;padding:0 5px;margin-left:5px;vertical-align:1px}
-  .cti-card .cc-time{flex:none;font-size:11px;color:var(--sub)}
-  .cti-card .cc-x{flex:none;border:none;background:none;font-size:18px;color:var(--sub);padding:2px 6px}
-  .cti-pop{position:fixed;left:8px;right:8px;top:calc(env(safe-area-inset-top) + 8px);z-index:60;
-    background:#fff;border:2px solid var(--accent);border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.28);
-    padding:12px 14px;display:none}
-  .cti-pop.open{display:block}
-  .cti-pop .cp-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}
-  .cti-pop .cp-ico{font-size:18px}
-  .cti-pop .cp-num{font-size:17px;font-weight:700;letter-spacing:.5px}
-  .cti-pop .cp-name{font-size:18px;font-weight:700;margin:2px 0}
-  .cti-pop .cp-name .cp-attr{display:inline-block;font-size:11px;font-weight:700;color:#fff;background:var(--accent);border-radius:4px;padding:1px 6px;margin-left:6px;vertical-align:2px}
-  .cti-pop .cp-line{font-size:13px;color:#333;line-height:1.7}
-  .cti-pop .cp-memo{font-size:13px;color:#c00000;font-weight:700;white-space:pre-wrap;margin-top:2px}
-  .cti-pop .cp-new{font-size:14px;color:var(--sub);margin:4px 0 2px}
-  .cti-pop .cp-btns{display:flex;gap:8px;margin-top:10px}
-  .cti-pop .cp-btns button{flex:1;border:1px solid #bbb;background:#fff;border-radius:8px;padding:10px 4px;font-size:14px}
-  .cti-pop .cp-btns button.main{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
-  .th-info{display:none;font-size:12.5px;line-height:1.6;border-radius:6px;padding:7px 9px;margin:-4px 0 12px;background:#eef4fb;color:#1a4b8a;border:1px solid #c4d8f0}
-  .th-info.first{background:#fff7e8;color:#8a5a00;border-color:#ecd9ae}
-  .cust-bar{display:flex;gap:8px;padding:8px 14px 4px}
-  .cust-bar input{flex:1;border:1px solid #bbb;border-radius:8px;padding:9px 10px;font-size:15px}
-  .cust-bar button{flex:none;border:1px solid var(--accent);color:var(--accent);background:#fff;border-radius:8px;padding:0 14px;font-size:14px;font-weight:700}
-  .cust-list{overflow-y:auto;max-height:52vh;padding:6px 14px 14px}
-  .cust-row{border:1px solid #ccc;border-radius:8px;padding:9px 11px;margin-bottom:8px;background:#fff}
-  .cust-row b{font-size:15px}
-  .cust-row .cr-sub{font-size:12px;color:var(--sub);margin-top:2px;line-height:1.5}
-  .cust-empty{text-align:center;color:var(--sub);font-size:14px;padding:30px 0}
-  .cust-hist{border:1px solid #ddd;border-radius:8px;background:#fafafa;max-height:130px;overflow-y:auto;padding:6px 10px;font-size:13px;line-height:1.8}
-  .cti-status{font-size:12px;border-radius:6px;padding:6px 8px;margin:0 0 8px;background:#f2f2f2;color:var(--sub)}
-  .cti-status.ok{background:#eaf7ea;color:#1a7a1a}
-  .cti-status.ng{background:#fdeaea;color:#c00000}
-  .cti-url{font-size:11px;word-break:break-all;background:#f7f7f7;border:1px solid #ddd;border-radius:6px;padding:6px 8px;color:#333}
 
   /* メニュー */
   .menu-body{padding:10px 14px 16px}
@@ -341,7 +324,7 @@
   </div>
   <div class="cand">
     <table>
-      <thead><tr><th>セラピスト</th><th>最短開始</th><th>最大コース</th></tr></thead>
+      <thead><tr><th>セラピスト</th><th>最短開始</th><th>最大コース</th><th>補足</th></tr></thead>
       <tbody id="candBody"></tbody>
     </table>
   </div>
@@ -398,11 +381,10 @@
     <button id="openReport">レポート</button>
     <button id="openSettings">設定</button>
     <button id="openTherapistMgmt">セラピスト管理</button>
-    <button id="openCustMgmt">顧客管理</button>
+    <button id="openSeisan">精算</button>
     <button id="cloudPush" class="cloud-btn">☁ 預ける(クラウドへ保存)</button>
     <button id="cloudPull" class="cloud-btn">☁ 受け取る(クラウドから取得)</button>
     <button id="openSyncConfig">クラウド同期設定</button>
-    <button id="openCtiConfig">着信連携設定(CTI)</button>
     <button id="expData">エクスポート(バックアップ保存)</button>
     <button id="impData">インポート(バックアップ読込)</button>
     <input type="file" id="impFile" accept=".md,.json,text/markdown,application/json" style="display:none">
@@ -455,77 +437,6 @@
   </div>
 </div>
 
-<!-- ★M-V13: 着信連携(CTI)設定シート -->
-<div class="sheet" id="ctiSheet">
-  <div class="grip"></div>
-  <h2>着信連携設定(CTI)<button class="sheet-close">×</button></h2>
-  <div class="sync-body">
-    <p class="menu-note">Firebase Realtime Databaseを中継して、Androidの着信番号をこの画面へリアルタイム表示します。初回設定はREADMEの「着信連携」の章をご覧ください(約10分)。</p>
-    <div class="fg"><label>データベースURL</label><input id="ctDbUrl" placeholder="https://xxxx-default-rtdb.firebaseio.com" autocapitalize="off" autocorrect="off"></div>
-    <div class="fg"><label>店舗キー(このキーが合言葉になります)</label><input id="ctStoreKey" placeholder="下の「自動生成」を押してください" autocapitalize="off" autocorrect="off"></div>
-    <div class="r" style="display:flex;gap:8px;margin-bottom:10px">
-      <button id="ctGenKey" style="flex:1;border:1px solid #bbb;background:#fff;border-radius:8px;padding:9px;font-size:14px">店舗キーを自動生成</button>
-    </div>
-    <p class="menu-note" id="ctInfo">未設定です</p>
-    <div class="fg"><label>MacroDroid送信先URL(設定保存後に表示)</label>
-      <div class="cti-url" id="ctMacroUrl">—</div>
-    </div>
-    <div class="r" style="display:flex;gap:8px">
-      <button id="ctCopyUrl" style="flex:1;border:1px solid #bbb;background:#fff;border-radius:8px;padding:9px;font-size:14px">送信先URLをコピー</button>
-    </div>
-  </div>
-  <div class="sheet-foot">
-    <button class="sub" id="ctTest">接続テスト</button>
-    <button class="main" id="ctSave">保存</button>
-  </div>
-</div>
-
-<!-- ★M-V13: 顧客管理シート -->
-<div class="sheet" id="custSheet">
-  <div class="grip"></div>
-  <h2>顧客管理<button class="sheet-close">×</button></h2>
-  <div class="cti-status" id="custStatus" style="margin:8px 14px 0">—</div>
-  <div class="cust-bar">
-    <input id="custSearch" placeholder="名前・電話番号で検索" autocomplete="off">
-    <button id="custAdd">＋新規</button>
-  </div>
-  <div class="cust-list" id="custList"></div>
-</div>
-
-<!-- ★M-V13: 顧客編集シート -->
-<div class="sheet" id="custEditSheet">
-  <div class="grip"></div>
-  <h2 id="ceTitle">顧客編集<button class="sheet-close">×</button></h2>
-  <div class="sync-body">
-    <div class="fg-row" style="display:flex;gap:10px">
-      <div class="fg" style="flex:1"><label>名前</label><input id="ceName" placeholder="例: 田中様"></div>
-      <div class="fg" style="flex:1"><label>属性</label><select id="ceAttr"></select></div>
-    </div>
-    <div class="fg"><label>電話番号(着信照合キー・ハイフン不要)</label><input id="cePhone" inputmode="numeric" placeholder="例: 09012345678"></div>
-    <div class="fg"><label>メモ・NG事項(着信時に赤字表示)</label><input id="ceMemo" placeholder="例: 強もみNG"></div>
-    <div class="fg"><label>来店履歴(予約登録時に自動追記)</label>
-      <div class="cust-hist" id="ceHist">履歴なし</div>
-    </div>
-  </div>
-  <div class="sheet-foot">
-    <button class="sub" id="ceDelete" style="color:#c00000;border-color:#c00000">削除</button>
-    <button class="main" id="ceSave">保存</button>
-  </div>
-</div>
-
-<!-- ★M-V13.1: 着信スタック(連続着信対応) -->
-<div class="cti-stack" id="ctiStack"></div>
-
-<!-- ★M-V13.1: 着信詳細パネル(カードをタップで表示) -->
-<div class="cti-pop" id="ctiPop">
-  <div class="cp-head"><span class="cp-ico">📞</span><span class="cp-num" id="cpNum">—</span></div>
-  <div id="cpBody"></div>
-  <div class="cp-btns">
-    <button id="cpAction" class="main">予約フォームを開く</button>
-    <button id="cpClose">閉じる</button>
-  </div>
-</div>
-
 <!-- 注意点編集シート -->
 <div class="sheet" id="cauSheet">
   <div class="grip"></div>
@@ -548,7 +459,6 @@
   <div class="form-body">
     <div class="caution" id="fCaution"></div>
     <div class="fg"><label>指名セラピスト</label><select id="fTherapist"></select></div>
-    <div class="th-info" id="fThInfo"></div>
     <div class="fg-row">
       <div class="fg"><label>開始時間</label><input id="fStart" inputmode="numeric" placeholder="例 2130 / 26:30"></div>
       <div class="fg"><label>コース(分)</label><select id="fCourse"></select></div>
@@ -646,6 +556,26 @@
     <h3 class="set-h">指名文言(指名種別ごとの追加文言)</h3>
     <div id="sNomPhraseRows"></div>
     <button class="ho-add" id="sNomPhraseAdd" type="button">+ 文言を追加</button>
+
+    <!-- ★M-V13: 精算設定 -->
+    <h3 class="set-h">精算設定</h3>
+    <div class="fg-row">
+      <div class="fg"><label>女性給 丸め基準値(円)</label><input id="szRoundWoman" inputmode="numeric"></div>
+      <div class="fg"><label>店落ち 丸め基準値(円)</label><input id="szRoundShop" inputmode="numeric"></div>
+    </div>
+    <p class="menu-note">1000円未満の端数がこの基準値未満なら切り下げ、以上なら切り上げます(基準値500なら通常の四捨五入と同じ)。</p>
+    <div class="fg-row">
+      <div class="fg"><label>バック率アラートの基準</label>
+        <select id="szAlertMode"><option value="fixed">固定値(%)</option><option value="minRate">本日の最低バック率</option></select>
+      </div>
+      <div class="fg"><label>固定値(%)</label><input id="szAlertPercent" inputmode="numeric"></div>
+    </div>
+    <p class="menu-note">女性給(生合計)が「預かり金合計×この基準」を下回った場合、バック率の入力ミスの疑いとして警告します。</p>
+    <h3 class="set-h">精算送信文(セラピスト向け・ヘッダー/フッター)</h3>
+    <p class="menu-note">本文(コース内訳・合計・釣り銭など)は自動生成されます。前後に付ける固定文のみ編集できます。</p>
+    <div class="fg"><label>ヘッダー</label><textarea id="szMsgHeader" class="set-ta set-ta-s"></textarea></div>
+    <div class="fg"><label>フッター</label><textarea id="szMsgFooter" class="set-ta set-ta-s"></textarea></div>
+    <button class="ho-add" id="szMsgReset" type="button">文面を初期値に戻す</button>
     <div style="height:8px"></div>
   </div>
   <div class="form-foot">
@@ -714,6 +644,22 @@
 <div class="upd-banner" id="updBanner">
   <span>新しいバージョンがあります</span>
   <button id="updBtn">更新</button>
+</div>
+
+<!-- 精算(全画面) ★M-V13 -->
+<div class="form-page" id="seisanPage">
+  <div class="form-head">
+    <button class="back" id="seisanBack">‹ 戻る</button>
+    <h2>精算</h2>
+  </div>
+  <div class="form-body">
+    <div class="att-search-wrap">
+      <input id="seisanSearch" placeholder="セラピスト名で検索して追加" autocomplete="off">
+      <div class="att-sug" id="seisanSug"></div>
+    </div>
+    <div id="seisanCards"></div>
+    <div class="att-empty" id="seisanEmpty">上の検索からセラピストを追加してください。</div>
+  </div>
 </div>
 
 <div id="toast"></div>

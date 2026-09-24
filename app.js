@@ -14,7 +14,7 @@ const COLUMNS       = (24 * 60) / MINUTE_STEP; // 144
 const COURSES       = [60, 80, 100, 120];
 const SEARCH_COURSES = [60, 80, 100, 120, 140, 160, 180]; // 空枠検索用
 
-const APP_VERSION = "M-V13.1";
+const APP_VERSION = "M-V13";
 
 /* ================= 純粋ロジック(移植) ================= */
 
@@ -48,10 +48,10 @@ function fmtBiz(min) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-// SNS用: 通常24h表記
+// SNS用: 通常24h表記(0〜9時は0埋めしない。M-V13: 「8:20」「0:15」のように直接時間で表示)
 function fmtNormal(min) {
   const h = Math.floor(min / 60) % 24, m = min % 60;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  return `${h}:${String(m).padStart(2, "0")}`;
 }
 
 // 営業日判定: 現在時刻→営業日("YYYY-MM-DD")
@@ -345,9 +345,9 @@ function calcTotal(prices, course, ext, discount, opPrice, applyNomFee, nominati
    ・{金額} = (コース料金+延長料金+指名料) − 割引 (0未満は0・OPは含めない)
    ・行内の既知変数がすべて空(数値0含む)ならその行を丸ごと省略
    ・空値の変数は直後の空白(半角/全角)1文字も除去 / 連続空行は1行に / 先頭末尾の空行は除去 */
-function fmtMsgTime(min) { // PC版と同じ「9:30 / 26:30」形式(時は0埋めしない)
+function fmtMsgTime(min) { // ★M-V13: 出力統一のため24時以降は巻き戻す表記(最短取得コピーと同じfmtNormal仕様)
   if (min == null || min < 0) return "";
-  return `${Math.floor(min / 60)}:${String(min % 60).padStart(2, "0")}`;
+  return fmtNormal(min);
 }
 function resolveAttrDisplay(rules, attr, nom) {
   for (const rule of (rules || [])) {
@@ -476,7 +476,7 @@ function holdCellsToRanges(cols) {
 
 /* レポート1行(PC: ReportBuilder.FormatLine 移植) */
 function reportFormatLine(r) {
-  const start = fmtBiz(r.start);
+  const start = fmtNormal(r.start); // ★M-V13: 出力統一のため24時以降は巻き戻す表記
   let dur = `${r.courseMinutes}分`;
   if ((r.extensionMinutes || 0) > 0) dur += `+${r.extensionMinutes}分`;
   const cust = (r.customer || "").trim();
@@ -546,6 +546,164 @@ function buildTherapistMemo(face, body, kan, fee, caution) {
   return `顔:${face}/体:${body}/寛:${kan}/${fee}/[${c}]`;
 }
 
+/* ================= 精算計算(★M-V13新規) ================= */
+
+// バック率カテゴリの解決: 指名種別名 → "free" | "hime" | "hon"(F・写・その他は全てfree扱い)
+function backCategoryOf(nominationType) {
+  const n = (nominationType || "").trim();
+  if (n === "本") return "hon";
+  if (n === "姫") return "hime";
+  return "free";
+}
+const BACK_CATEGORY_LABEL = { free: "フリー", hime: "姫", hon: "本指名" };
+
+// 千円未満の端数を基準値で丸める(端数<基準値→切り下げ、端数>=基準値→切り上げ。基準値500なら通常の四捨五入と同義)
+function roundToThousand(amount, base) {
+  const rem = ((Math.round(amount) % 1000) + 1000) % 1000;
+  const floor1000 = Math.round(amount) - rem;
+  return rem >= base ? floor1000 + 1000 : floor1000;
+}
+
+// OP金額の解決(PC: recalcForm と同一ロジック。CFG.optionsに名前一致があればその単価、無ければ「有」の旧互換単価)
+function resolveOpPrice(opFlag, prices, cfgOptions) {
+  const opDef = (cfgOptions || []).find(o => o.name === opFlag);
+  if (opDef) return Math.max(0, opDef.price || 0);
+  if (opFlag === "有") return Math.max(0, (prices && prices.opPrice) || 0);
+  return 0;
+}
+
+/* 1日分(1セラピスト)の精算サマリを計算
+ * reservations: そのセラピスト・その日の予約配列(r.totalAmount = システム計算済み金額)
+ * rates: {free,hime,hon}(%。null/""は未設定)
+ * entry: {startingCash, transportFee, miscName, miscAmount, deposits:{予約id: 入力された預かり金}}
+ * 戻り値: 画面表示・送信文生成に使う集計値一式 */
+function buildSeisanSummary(reservations, prices, rates, cfgOptions, cfgNomTypes, therapist, entry, roundBaseWoman, roundBaseShop) {
+  const courseGroups = new Map(); // courseMinutes -> Map(category -> {count, amount})
+  const nomFeeGroups = new Map(); // 指名種別名 -> {count, amount}
+  let opCount = 0, opAmount = 0;
+  let womanRawTotal = 0;
+  let depositTotal = 0;
+  const depositMismatches = [];
+  const missingRateCategories = new Set();
+
+  for (const r of reservations) {
+    const category = backCategoryOf(r.nominationType);
+    const rateVal = rates ? rates[category] : null;
+    const hasRate = rateVal != null && rateVal !== "";
+    if (!hasRate) missingRateCategories.add(category);
+    const rateNum = hasRate ? Number(rateVal) : 0;
+
+    const courseAmount = (prices.coursePrice && prices.coursePrice[r.courseMinutes]) || 0;
+    const courseReward = hasRate ? Math.round(courseAmount * rateNum / 100) : 0;
+
+    const unit = Math.max(1, prices.extensionUnitMinutes);
+    const units = Math.floor(Math.max(0, r.extensionMinutes || 0) / unit);
+    const unitPrice = Math.max(0, prices.extensionUnitPrice || 0);
+    let extReward = 0;
+    for (let i = 0; i < units; i++) {
+      extReward += hasRate ? Math.max(3000, Math.round(unitPrice * rateNum / 100)) : 0;
+    }
+
+    const opAmt = resolveOpPrice(r.opFlag, prices, cfgOptions);
+    const nomDef = (cfgNomTypes || []).find(n => n.name === r.nominationType);
+    const applyFee = nomDef ? !!nomDef.fee : r.nominationType === "本"; // 旧データ互換
+    const nomFeeAmt = applyFee ? Math.max(0, (therapist && therapist.nominationFee) || 0) : 0;
+
+    if (!courseGroups.has(r.courseMinutes)) courseGroups.set(r.courseMinutes, new Map());
+    const cg = courseGroups.get(r.courseMinutes);
+    if (!cg.has(category)) cg.set(category, { count: 0, amount: 0 });
+    const slot = cg.get(category);
+    slot.count += 1;
+    slot.amount += courseReward + extReward;
+
+    if (applyFee && nomFeeAmt > 0) {
+      const label = r.nominationType || "";
+      if (!nomFeeGroups.has(label)) nomFeeGroups.set(label, { count: 0, amount: 0 });
+      const g = nomFeeGroups.get(label);
+      g.count += 1; g.amount += nomFeeAmt;
+    }
+
+    if (opAmt > 0) { opCount += 1; opAmount += opAmt; }
+
+    womanRawTotal += courseReward + extReward + nomFeeAmt + opAmt;
+
+    const entered = entry && entry.deposits ? entry.deposits[r.id] : undefined;
+    const expected = r.totalAmount; // 予約保存時のシステム計算値(コース+延長+OP+指名料-割引)
+    if (entered != null && entered !== "") {
+      depositTotal += Number(entered);
+      if (expected != null && Number(entered) !== expected) {
+        depositMismatches.push({ reservationId: r.id, expected, entered: Number(entered) });
+      }
+    }
+  }
+
+  const transportFee = Math.max(0, (entry && entry.transportFee) || 0);
+  const miscAmount = Math.max(0, (entry && entry.miscAmount) || 0);
+  const miscName = (entry && entry.miscName) || "";
+
+  womanRawTotal += transportFee - miscAmount;
+  const womanRounded = roundToThousand(womanRawTotal, roundBaseWoman);
+
+  const shopCutRaw = depositTotal - womanRawTotal;
+  const shopCutRounded = roundToThousand(shopCutRaw, roundBaseShop);
+
+  const startingCash = Math.max(0, (entry && entry.startingCash) || 0);
+  const change = startingCash + shopCutRounded;
+
+  const catOrder = ["free", "hime", "hon"];
+  const groups = [...courseGroups.keys()].sort((a, b) => a - b).map(cm => {
+    const cg = courseGroups.get(cm);
+    const rows = catOrder.filter(cat => cg.has(cat)).map(cat => ({
+      category: cat, label: BACK_CATEGORY_LABEL[cat], count: cg.get(cat).count, amount: cg.get(cat).amount
+    }));
+    return { courseMinutes: cm, rows };
+  });
+  const nomFeeRows = [...nomFeeGroups.entries()].map(([label, g]) => ({ label: `${label}指名数`, count: g.count, amount: g.amount }));
+
+  return {
+    groups, nomFeeRows, opCount, opAmount, transportFee, miscName, miscAmount,
+    womanRawTotal, womanRounded, depositTotal, shopCutRaw, shopCutRounded,
+    startingCash, change, depositMismatches, missingRateCategories: [...missingRateCategories]
+  };
+}
+
+/* アラート②: バック率設定ミスの疑い(女性給の生合計が、預かり金合計に対する下限比率を下回っていないか。
+   通常は女性給(B)が店落ち(C)を上回るのが正常(B>=depositTotal×閾値%)なので、下回ったら異常) */
+function checkBackRateAlert(summary, alertMode, alertFixedPercent, rates) {
+  if (!summary.depositTotal) return false;
+  let thresholdPercent = alertFixedPercent;
+  if (alertMode === "minRate") {
+    const vals = ["free", "hime", "hon"].map(k => rates ? rates[k] : null)
+      .filter(v => v != null && v !== "").map(Number);
+    if (vals.length) thresholdPercent = Math.min(...vals);
+  }
+  return summary.womanRawTotal < summary.depositTotal * (thresholdPercent / 100);
+}
+
+/* 精算送信文の生成(コース分数の短い順→カテゴリはフリー→姫→本の順。0件/0円の行は省略) */
+function buildSeisanMessage(therapistName, summary, fmt) {
+  const lines = [];
+  if (fmt && fmt.header && fmt.header.trim()) { lines.push(fmt.header); lines.push(""); }
+  lines.push(`報酬【${therapistName}】`);
+  lines.push("");
+  for (const g of summary.groups) {
+    lines.push(`${g.courseMinutes}分`);
+    for (const row of g.rows) lines.push(`${row.label}→${row.count}本→${row.amount}円`);
+    lines.push("");
+  }
+  const extraLines = [];
+  for (const row of summary.nomFeeRows) extraLines.push(`${row.label}→${row.count}本→${row.amount}円`);
+  if (summary.opCount > 0) extraLines.push(`OP　　→${summary.opCount}本→${summary.opAmount}円`);
+  if (summary.transportFee > 0) extraLines.push(`交通費　→${summary.transportFee}円`);
+  if (summary.miscAmount > 0 && summary.miscName.trim()) extraLines.push(`${summary.miscName}→ー${summary.miscAmount}円`);
+  if (extraLines.length) { lines.push(...extraLines); lines.push(""); }
+  lines.push(`合計      →${summary.womanRawTotal}円`);
+  lines.push(`単数四捨五入【本日の報酬】→${summary.womanRounded}円`);
+  lines.push(`釣り銭→${summary.change}円`);
+  if (fmt && fmt.footer && fmt.footer.trim()) { lines.push(""); lines.push(fmt.footer); }
+  return lines.join("\n");
+}
+
 /* ================= Node テスト用エクスポート ================= */
 if (typeof module !== "undefined") {
   module.exports = {
@@ -553,7 +711,8 @@ if (typeof module !== "undefined") {
     parseIntervalMinutes, tryFindEarliestSlot, maxText, sanName, padName,
     calcEnd, calcTotal, findOverlaps, isOverShiftEnd, holdCellsToRanges, normAttendance,
     reportFormatLine, buildReport, levenshtein, therapistMatches, buildTherapistMemo,
-    findSlotForCourse, maxTextEx, findLastSlotForCourse
+    findSlotForCourse, maxTextEx, findLastSlotForCourse,
+    backCategoryOf, roundToThousand, resolveOpPrice, buildSeisanSummary, checkBackRateAlert, buildSeisanMessage
   };
 }
 if (typeof window === "undefined") {
@@ -585,6 +744,8 @@ const K = {
   discounts: "este.discounts",
   snsFormat: "este.snsFormat",
   sendFormat: "este.sendFormat", // ★M-V12: 送信文フォーマット(PC V4.0〜と共通・同期対象)
+  seisan: d => `este.seisan.${d}`,        // ★M-V13: 精算データ(当日限り)
+  seisanFormat: "este.seisanFormat",      // ★M-V13: 精算送信文フォーマット
   seq: "este.therapistSeq"
 };
 
@@ -595,6 +756,19 @@ function loadAttendance(d) { return LS.get(K.attendance(d), []); }
 function saveAttendance(d, list) { LS.set(K.attendance(d), list); touchMeta(K.attendance(d)); }
 function loadReservations(d) { return LS.get(K.reservations(d), []); }
 function saveReservations(d, list) { LS.set(K.reservations(d), list); touchMeta(K.reservations(d)); }
+function loadSeisan(d) { return LS.get(K.seisan(d), []); } // ★M-V13
+function saveSeisan(d, list) { LS.set(K.seisan(d), list); touchMeta(K.seisan(d)); } // ★M-V13
+const DEFAULT_SEISAN_FORMAT = { // ★M-V13
+  header: "本日の、報酬をお送りいたします！\n後ほど、ご確認を宜しくお願い致します🙆‍♂️",
+  footer: "この後、ルーム使用をしますので\n電気、エアコンはつけたままで大丈夫です🙇‍♂️\n補充、清掃、洗濯などは\nお願い致します🙆‍♂️"
+};
+function loadSeisanFormat() { // ★M-V13
+  const f = LS.get(K.seisanFormat, null);
+  if (!f) return JSON.parse(JSON.stringify(DEFAULT_SEISAN_FORMAT));
+  return { header: typeof f.header === "string" ? f.header : DEFAULT_SEISAN_FORMAT.header,
+    footer: typeof f.footer === "string" ? f.footer : DEFAULT_SEISAN_FORMAT.footer };
+}
+function saveSeisanFormat(f) { LS.set(K.seisanFormat, f); touchMeta(K.seisanFormat); } // ★M-V13
 function loadHolds(d) { return LS.get(K.holds(d), []); }
 function saveHolds(d, list) { LS.set(K.holds(d), list); touchMeta(K.holds(d)); }
 function loadSendQueue() { return LS.get(K.sendQueue, {}); }
@@ -616,7 +790,8 @@ const DEFAULT_SETTINGS = {
   ],
   options: [{ name: "有", price: 5000 }],
   areas: ["A", "B"],
-  calc: { prep: 15, defaultInterval: 20, roundTo: 5 }
+  calc: { prep: 15, defaultInterval: 20, roundTo: 5 },
+  seisan: { roundBaseWoman: 500, roundBaseShop: 750, alertMode: "fixed", alertFixedPercent: 50 } // ★M-V13
 };
 function loadSettings() {
   const s = LS.get("este.settings", null);
@@ -633,6 +808,12 @@ function loadSettings() {
       prep: s.calc && Number.isFinite(s.calc.prep) ? s.calc.prep : d.calc.prep,
       defaultInterval: s.calc && Number.isFinite(s.calc.defaultInterval) ? s.calc.defaultInterval : d.calc.defaultInterval,
       roundTo: s.calc && Number.isFinite(s.calc.roundTo) && s.calc.roundTo >= 1 ? s.calc.roundTo : d.calc.roundTo
+    },
+    seisan: { // ★M-V13
+      roundBaseWoman: s.seisan && Number.isFinite(s.seisan.roundBaseWoman) ? s.seisan.roundBaseWoman : d.seisan.roundBaseWoman,
+      roundBaseShop: s.seisan && Number.isFinite(s.seisan.roundBaseShop) ? s.seisan.roundBaseShop : d.seisan.roundBaseShop,
+      alertMode: s.seisan && (s.seisan.alertMode === "fixed" || s.seisan.alertMode === "minRate") ? s.seisan.alertMode : d.seisan.alertMode,
+      alertFixedPercent: s.seisan && Number.isFinite(s.seisan.alertFixedPercent) ? s.seisan.alertFixedPercent : d.seisan.alertFixedPercent
     }
   };
 }
@@ -722,6 +903,7 @@ const state = {
   reservations: [],
   holdCells: {},         // therapistId -> Set(col)
   shortestBaseMin: null, // 最短パネルの基準(分)
+  seisan: [],             // ★M-V13: 精算データ(当日限り)
   editing: null          // {id} 編集中予約
 };
 
@@ -737,6 +919,7 @@ function presentTherapists() {
 function reloadDate() {
   state.attendance = loadAttendance(state.dateKey);
   state.reservations = loadReservations(state.dateKey);
+  state.seisan = loadSeisan(state.dateKey); // ★M-V13
   state.holdCells = {};
   for (const h of loadHolds(state.dateKey)) {
     const col = Math.floor((normSpan(h.startMin) - BIZ_START_MIN) / MINUTE_STEP);
@@ -989,18 +1172,20 @@ document.getElementById("btnAttendance").addEventListener("click", () => { close
  * 上部の検索(部分一致+あいまい一致)から候補をタップして行を追加する。
  * 追加済みの行: 名前(固定) / 出勤 / 終了 / エリア / 削除 */
 function attAddedIds() {
-  return new Set([...document.querySelectorAll("#attRows .att-row")]
-    .map(tr => Number(tr.dataset.tid)));
+  return new Set([...document.querySelectorAll("#attRows .att-entry")]
+    .map(el => Number(el.dataset.tid)));
 }
 function attRefreshEmpty() {
   const empty = document.getElementById("attEmpty");
-  empty.classList.toggle("show", document.querySelectorAll("#attRows .att-row").length === 0);
+  empty.classList.toggle("show", document.querySelectorAll("#attRows .att-entry").length === 0);
 }
 function attAddRow(t, cur, focusStart) {
   const body = document.getElementById("attRows");
+  const wrap = document.createElement("div"); // ★M-V13: 出勤行+SNS表示補足をまとめる当日限りの入れ物
+  wrap.className = "att-entry";
+  wrap.dataset.tid = String(t.id);
   const tr = document.createElement("div");
   tr.className = "att-row";
-  tr.dataset.tid = String(t.id);
   const nm = document.createElement("div");
   nm.className = "nm-label";
   nm.textContent = t.name;
@@ -1023,12 +1208,17 @@ function attAddRow(t, cur, focusStart) {
   del.className = "x-del";
   del.textContent = "×";
   del.addEventListener("click", () => {
-    tr.remove();
+    wrap.remove();
     attRefreshEmpty();
     renderAttSuggestions(); // 候補に戻す
   });
   tr.append(nm, s, e, ar, del);
-  body.appendChild(tr);
+  const sns = document.createElement("input"); // ★M-V13: SNS表示補足(この日の出勤データにのみ紐づく・翌日には残らない)
+  sns.className = "att-sns";
+  sns.placeholder = "SNS表示補足(最短取得コピー用・任意・例: 23:00まで)";
+  if (cur && cur.snsSuffix) sns.value = cur.snsSuffix;
+  wrap.append(tr, sns);
+  body.appendChild(wrap);
   attRefreshEmpty();
   if (focusStart) s.focus();
 }
@@ -1091,14 +1281,16 @@ function openAttendance() {
 document.getElementById("attSave").addEventListener("click", () => {
   const out = [];
   const errs = [];
-  for (const tr of document.querySelectorAll("#attRows .att-row")) {
-    const tid = Number(tr.dataset.tid);
+  for (const wrap of document.querySelectorAll("#attRows .att-entry")) {
+    const tid = Number(wrap.dataset.tid);
+    const tr = wrap.querySelector(".att-row");
     const [, s, e, ar] = tr.children;
+    const snsSuffix = wrap.querySelector(".att-sns").value.trim(); // ★M-V13
     const sv = parseBizTime(s.value), ev = parseBizTime(e.value);
     const t = state.therapists.find(x => x.id === tid);
     const nm = t ? t.name : "?";
     if (sv == null || ev == null) { errs.push(`${nm}: 出勤・終了時刻を入力してください(例: 1200 / 2630)`); continue; }
-    out.push({ therapistId: tid, startMin: sv, endMin: ev, area: ar.value });
+    out.push({ therapistId: tid, startMin: sv, endMin: ev, area: ar.value, snsSuffix });
   }
   if (errs.length) { alert(errs.join("\n")); return; }
   state.attendance = out;
@@ -1188,17 +1380,35 @@ function renderShortest() {
   const cands = computeCandidates(base)
     .filter(c => c.maxMinutes === 0 || c.startMin >= base)
     .filter(c => shortestArea === "全" || areaOf.get(c.therapistId) === shortestArea);
+  const snsSuffixOf = new Map(state.attendance.map(a => [a.therapistId, (a.snsSuffix || "").trim()])); // ★M-V13: この日の出勤データから(翌日には残らない)
   const tb = document.getElementById("candBody");
   tb.innerHTML = "";
   for (const c of cands) {
     const tr = document.createElement("tr");
     tr.className = c.maxMinutes > 0 ? "ok" : "ng";
-    tr.innerHTML = `<td>${esc(c.name)}</td><td>${c.maxMinutes > 0 ? fmtBiz(c.startMin) : "—"}</td><td>${c.maxMinutes > 0 ? maxText(c.maxMinutes, c.cap) : "本日受付終了"}</td>`;
+    tr.innerHTML = `<td>${esc(c.name)}</td><td>${c.maxMinutes > 0 ? fmtBiz(c.startMin) : "—"}</td><td>${c.maxMinutes > 0 ? maxText(c.maxMinutes, c.cap) : "本日受付終了"}</td><td></td>`;
     if (c.maxMinutes > 0) {
       tr.addEventListener("click", () => {
         closeSheets();
         openReservationForm(null, { therapistId: c.therapistId, startMin: c.startMin, lockTherapist: true });
       });
+      // ★M-V13: 最短取得の画面からSNS表示補足を直接編集(出勤登録を開かずに済む・当日のみ有効)
+      const cur = snsSuffixOf.get(c.therapistId) || "";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "cand-sns-btn" + (cur ? " set" : "");
+      btn.textContent = cur || "＋補足";
+      btn.addEventListener("click", ev => {
+        ev.stopPropagation();
+        const v = prompt(`${c.name} さんの補足(SNSコピーの「〜」の直後に付く文言・今日のみ有効)`, cur);
+        if (v === null) return;
+        const idx = state.attendance.findIndex(a => a.therapistId === c.therapistId);
+        if (idx < 0) return; // 出勤データが無い(通常は起こらない)
+        state.attendance[idx] = { ...state.attendance[idx], snsSuffix: v.trim() };
+        saveAttendance(state.dateKey, state.attendance);
+        renderShortest();
+      });
+      tr.children[3].appendChild(btn);
     }
     tb.appendChild(tr);
   }
@@ -1208,7 +1418,8 @@ function renderShortest() {
   if (fm.header && fm.header.trim()) { lines.push(fm.header); lines.push(""); }
   for (const c of cands) {
     if (c.maxMinutes <= 0) continue;
-    lines.push(`${padName(sanName(c.name), 5)} ${fmtNormal(c.startMin)}〜`);
+    const suffix = snsSuffixOf.get(c.therapistId) || ""; // ★M-V13: セラピスト別「〜」の後の固定文言(当日のみ)
+    lines.push(`${padName(sanName(c.name), 5)} ${fmtNormal(c.startMin)}〜${suffix}`);
   }
   if (fm.footer && fm.footer.trim()) { lines.push(""); lines.push(fm.footer); }
   document.getElementById("snsText").value = lines.join("\n");
@@ -1363,11 +1574,6 @@ function openReservationForm(editId, seed) {
 
   document.getElementById("fCustomer").value = r ? r.customer : "";
   document.getElementById("fPhone").value = r ? r.phoneLast4 : "";
-  // ★M-V13.1: 着信詳細の「予約フォームを開く」から引き継いだ顧客を新規予約に自動入力
-  if (!r && ctiPending && Date.now() - ctiPending.at < 15 * 60 * 1000) {
-    if (ctiPending.name) document.getElementById("fCustomer").value = ctiPending.name;
-    if (ctiPending.last4) document.getElementById("fPhone").value = ctiPending.last4;
-  }
   // 属性・指名・OPの選択肢は設定から生成(編集中の旧値がリストに無い場合も選べるよう追加)
   const attrVals = CFG.attrs.slice();
   if (r && r.customerAttr && !attrVals.includes(r.customerAttr)) attrVals.unshift(r.customerAttr);
@@ -1397,7 +1603,6 @@ function openReservationForm(editId, seed) {
 
   document.getElementById("fDelete").style.display = editId ? "block" : "none";
   updateCaution(); recalcForm();
-  updateThInfo(); // ★M-V13.1: 顧客×担当の履歴表示
   formPage.classList.add("open");
 }
 function setPay(v) {
@@ -1513,7 +1718,6 @@ document.getElementById("fDelete").addEventListener("click", () => {
   if (!confirm("この予約を削除しますか？")) return;
   state.reservations = state.reservations.filter(x => x.id !== formCtx.editId);
   saveReservations(state.dateKey, state.reservations);
-  ctiDeleteVisit(formCtx.editId); // ★M-V13: 顧客履歴側も削除(ベストエフォート)
   dequeueSend(formCtx.editId);
   refreshSendBadge();
   formPage.classList.remove("open");
@@ -1577,9 +1781,6 @@ document.getElementById("fSave").addEventListener("click", () => {
     state.reservations.push(r);
   }
   saveReservations(state.dateKey, state.reservations);
-
-  // ★M-V13: 顧客DBへ来店履歴を自動追記(非同期・失敗しても予約保存には影響しない)
-  ctiRecordVisit(r, state.dateKey);
 
   // 送信待機の登録・反映
   const sc = document.getElementById("fSendC").checked;
@@ -1986,6 +2187,287 @@ document.getElementById("tmDelete").addEventListener("click", () => {
 });
 document.getElementById("tmClear").addEventListener("click", tmClearForm);
 
+/* ================= 精算 ★M-V13 ================= */
+const seisanPage = document.getElementById("seisanPage");
+document.getElementById("openSeisan").addEventListener("click", () => {
+  closeSheets();
+  document.getElementById("seisanSearch").value = "";
+  document.getElementById("seisanSug").classList.remove("show");
+  renderSeisanCards();
+  seisanPage.classList.add("open");
+});
+document.getElementById("seisanBack").addEventListener("click", () => seisanPage.classList.remove("open"));
+
+function seisanAddedIds() {
+  return new Set(state.seisan.map(e => e.therapistId));
+}
+function renderSeisanSuggestions() {
+  const q = document.getElementById("seisanSearch").value.trim();
+  const sug = document.getElementById("seisanSug");
+  if (q === "") { sug.classList.remove("show"); sug.innerHTML = ""; return; }
+  const added = seisanAddedIds();
+  // その日出勤登録されているセラピストの中から検索(未出勤者は精算対象外)
+  const hits = presentTherapists().map(p => p.t)
+    .filter(t => !added.has(t.id) && therapistMatches(t.name, q))
+    .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase(), "ja"))
+    .slice(0, 8);
+  sug.innerHTML = "";
+  for (const t of hits) {
+    const b = document.createElement("button");
+    b.textContent = t.name;
+    b.addEventListener("click", () => {
+      state.seisan.push({
+        therapistId: t.id, startingCash: null, transportFee: null,
+        miscName: "", miscAmount: null,
+        rateFree: null, rateHime: null, rateHon: null,
+        deposits: {}
+      });
+      saveSeisan(state.dateKey, state.seisan);
+      document.getElementById("seisanSearch").value = "";
+      sug.classList.remove("show");
+      renderSeisanCards();
+    });
+    sug.appendChild(b);
+  }
+  sug.classList.toggle("show", sug.children.length > 0);
+}
+document.getElementById("seisanSearch").addEventListener("input", renderSeisanSuggestions);
+
+function seisanReservationsFor(therapistId) {
+  return state.reservations
+    .filter(r => r.therapistId === therapistId)
+    .sort((a, b) => a.start - b.start);
+}
+
+function seisanCompute(entry) {
+  const t = state.therapists.find(x => x.id === entry.therapistId);
+  const prices = loadPrices();
+  const rates = { free: entry.rateFree, hime: entry.rateHime, hon: entry.rateHon };
+  const reservations = seisanReservationsFor(entry.therapistId);
+  const summary = buildSeisanSummary(
+    reservations, prices, rates, CFG.options, CFG.nomTypes, t, entry,
+    CFG.seisan.roundBaseWoman, CFG.seisan.roundBaseShop
+  );
+  const alert2 = checkBackRateAlert(summary, CFG.seisan.alertMode, CFG.seisan.alertFixedPercent, rates);
+  return { t, reservations, summary, alert2 };
+}
+
+function seisanSaveEntry() {
+  saveSeisan(state.dateKey, state.seisan);
+}
+
+function renderSeisanCards() {
+  const wrap = document.getElementById("seisanCards");
+  wrap.innerHTML = "";
+  document.getElementById("seisanEmpty").classList.toggle("show", state.seisan.length === 0);
+  state.seisan.forEach((entry, idx) => {
+    wrap.appendChild(buildSeisanCard(entry, idx));
+  });
+}
+
+function buildSeisanCard(entry, idx) {
+  const card = document.createElement("div");
+  card.className = "sz-card";
+
+  const h4 = document.createElement("h4");
+  const del = document.createElement("button");
+  del.className = "x-del";
+  del.textContent = "×";
+  del.addEventListener("click", () => {
+    state.seisan.splice(idx, 1);
+    seisanSaveEntry();
+    renderSeisanCards();
+  });
+  const nameSpan = document.createElement("span");
+  const t0 = state.therapists.find(x => x.id === entry.therapistId);
+  nameSpan.textContent = t0 ? t0.name : "?";
+  h4.append(nameSpan, del);
+  card.appendChild(h4);
+
+  const numInput = (val, ph) => {
+    const i = document.createElement("input");
+    i.inputMode = "numeric";
+    i.placeholder = ph || "0";
+    if (val != null && val !== "") i.value = String(val);
+    return i;
+  };
+  const fg = (labelText, inputEl) => {
+    const d = document.createElement("div");
+    d.className = "fg";
+    const l = document.createElement("label"); l.textContent = labelText;
+    d.append(l, inputEl);
+    return d;
+  };
+
+  // 開始金・交通費
+  const row1 = document.createElement("div"); row1.className = "sz-row";
+  const inStart = numInput(entry.startingCash, "0");
+  const inTransport = numInput(entry.transportFee, "0");
+  row1.append(fg("開始金(円)", inStart), fg("交通費(円)", inTransport));
+  card.appendChild(row1);
+
+  // 雑費(名称+金額)
+  const row2 = document.createElement("div"); row2.className = "sz-row";
+  const inMiscName = document.createElement("input");
+  inMiscName.placeholder = "雑費の名称(任意)";
+  if (entry.miscName) inMiscName.value = entry.miscName;
+  const inMiscAmount = numInput(entry.miscAmount, "0");
+  row2.append(fg("雑費 名称", inMiscName), fg("雑費 金額(円)", inMiscAmount));
+  card.appendChild(row2);
+
+  // バック率
+  const row3 = document.createElement("div"); row3.className = "sz-row";
+  const inRateFree = numInput(entry.rateFree, "%");
+  const inRateHime = numInput(entry.rateHime, "%");
+  const inRateHon = numInput(entry.rateHon, "%");
+  row3.append(fg("バック率 フリー(%)", inRateFree), fg("バック率 姫(%)", inRateHime), fg("バック率 本(%)", inRateHon));
+  card.appendChild(row3);
+  const note = document.createElement("p");
+  note.className = "sz-rate-note";
+  note.textContent = "そのセラピストが使わない種別は空欄のままでOKです(その種別の予約が無ければ計算に影響しません)。";
+  card.appendChild(note);
+
+  // 予約一覧+預かり金入力
+  const reservations = seisanReservationsFor(entry.therapistId);
+  const resWrap = document.createElement("div");
+  if (reservations.length === 0) {
+    const p = document.createElement("div");
+    p.className = "sz-empty-res";
+    p.textContent = "本日のこのセラピストの予約はありません。";
+    resWrap.appendChild(p);
+  } else {
+    const head = document.createElement("div");
+    head.className = "sz-res-head";
+    head.innerHTML = `<span style="flex:1">予約</span><span style="width:88px;text-align:center">預かり金</span>`;
+    resWrap.appendChild(head);
+    for (const r of reservations) {
+      const row = document.createElement("div");
+      row.className = "sz-res-row";
+      const info = document.createElement("div");
+      info.className = "sz-r-info";
+      let durTxt = `${r.courseMinutes}分`;
+      if ((r.extensionMinutes || 0) > 0) durTxt += `+${r.extensionMinutes}分`;
+      info.textContent = `${fmtBiz(r.start)} ${durTxt} ${r.nominationType || ""} ${r.customer || ""}`;
+      const depInput = document.createElement("input");
+      depInput.className = "sz-r-dep";
+      depInput.inputMode = "numeric";
+      depInput.dataset.resId = r.id;
+      const cur = entry.deposits ? entry.deposits[r.id] : undefined;
+      if (cur != null && cur !== "") depInput.value = String(cur);
+      depInput.addEventListener("change", () => {
+        const v = depInput.value.trim();
+        entry.deposits = entry.deposits || {};
+        if (v === "") delete entry.deposits[r.id];
+        else entry.deposits[r.id] = Number(v) || 0;
+        seisanSaveEntry();
+        updateSeisanResult(entry, card);
+      });
+      row.append(info, depInput);
+      resWrap.appendChild(row);
+
+      const expectLine = document.createElement("div");
+      expectLine.className = "sz-r-expect";
+      expectLine.dataset.resId = r.id;
+      expectLine.style.display = "none";
+      resWrap.appendChild(expectLine);
+    }
+  }
+  card.appendChild(resWrap);
+
+  // 入力変更で保存+再計算
+  const bind = (el, key, isText) => {
+    el.addEventListener("change", () => {
+      const v = el.value.trim();
+      entry[key] = isText ? v : (v === "" ? null : Number(v) || 0);
+      seisanSaveEntry();
+      updateSeisanResult(entry, card);
+    });
+  };
+  bind(inStart, "startingCash");
+  bind(inTransport, "transportFee");
+  bind(inMiscName, "miscName", true);
+  bind(inMiscAmount, "miscAmount");
+  bind(inRateFree, "rateFree");
+  bind(inRateHime, "rateHime");
+  bind(inRateHon, "rateHon");
+
+  // 結果表示欄
+  const result = document.createElement("div");
+  result.className = "sz-result";
+  card.appendChild(result);
+
+  // コピーボタン
+  const btns = document.createElement("div");
+  btns.className = "sz-btns";
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "tm-main";
+  copyBtn.textContent = "送信文をコピー";
+  copyBtn.addEventListener("click", async () => {
+    const { t, summary } = seisanCompute(entry);
+    if (summary.missingRateCategories.length > 0) {
+      alert("バック率が未入力の種別があります。先に入力してください。");
+      return;
+    }
+    if (summary.depositMismatches.length > 0) {
+      alert(`預かり金がシステム計算値と一致しない予約が${summary.depositMismatches.length}件あります。赤字の欄を確認・修正してからコピーしてください。`);
+      return;
+    }
+    const msg = buildSeisanMessage(t ? t.name : "", summary, loadSeisanFormat());
+    if (await copyTextToClipboard(msg)) toast("送信文をコピーしました");
+    else alert("クリップボードへのコピーに失敗しました。以下を長押しコピーしてください。\n\n" + msg);
+  });
+  btns.appendChild(copyBtn);
+  card.appendChild(btns);
+
+  updateSeisanResult(entry, card);
+  return card;
+}
+
+function updateSeisanResult(entry, card) {
+  const { summary, alert2, reservations } = seisanCompute(entry);
+  const result = card.querySelector(".sz-result");
+
+  // 預かり金の突合せ表示(不一致の予約入力欄を赤くする)
+  const mismatchMap = new Map(summary.depositMismatches.map(m => [String(m.reservationId), m.expected]));
+  card.querySelectorAll(".sz-r-dep").forEach(inp => {
+    const expected = mismatchMap.get(inp.dataset.resId);
+    const isMismatch = expected != null;
+    inp.classList.toggle("mismatch", isMismatch);
+    const line = card.querySelector(`.sz-r-expect[data-res-id="${inp.dataset.resId}"]`);
+    if (line) {
+      if (isMismatch) { line.style.display = ""; line.textContent = `⚠ システム計算値と不一致(想定: ${expected.toLocaleString()}円)`; }
+      else { line.style.display = "none"; line.textContent = ""; }
+    }
+  });
+
+  const unenteredCount = reservations.filter(r => {
+    const v = entry.deposits ? entry.deposits[r.id] : undefined;
+    return v == null || v === "";
+  }).length;
+
+  let html = "";
+  if (summary.missingRateCategories.length > 0) {
+    const labels = summary.missingRateCategories.map(c => BACK_CATEGORY_LABEL_JS[c]).join("・");
+    html += `<div class="sz-err">⚠ 「${labels}」の予約がありますが、バック率が未入力です。入力してください。</div>`;
+  }
+  if (summary.depositMismatches.length > 0) {
+    html += `<div class="sz-err">⚠ 預かり金がシステム計算値と一致しない予約が${summary.depositMismatches.length}件あります。</div>`;
+  }
+  if (unenteredCount > 0) {
+    html += `<div class="sz-err">未入力の預かり金が${unenteredCount}件あります。</div>`;
+  }
+  html += `女性給(生合計) → <b>${summary.womanRawTotal.toLocaleString()}円</b><br>`;
+  html += `単数四捨五入後(本日の報酬) → <b>${summary.womanRounded.toLocaleString()}円</b><br>`;
+  html += `預かり金合計 → ${summary.depositTotal.toLocaleString()}円<br>`;
+  html += `店落ち → ${summary.shopCutRounded.toLocaleString()}円<br>`;
+  html += `釣り銭(開始金+店落ち) → <b>${summary.change.toLocaleString()}円</b>`;
+  if (alert2) {
+    html += `<div class="sz-alert">⚠ 女性給が想定より低くなっています。バック率の入力を確認してください。</div>`;
+  }
+  result.innerHTML = html;
+}
+const BACK_CATEGORY_LABEL_JS = { free: "フリー", hime: "姫", hon: "本" };
+
 /* ================= 設定画面 ================= */
 const setPage = document.getElementById("setPage");
 document.getElementById("openSettings").addEventListener("click", () => {
@@ -2027,6 +2509,14 @@ function loadSettingsIntoForm() {
   const npWrap = document.getElementById("sNomPhraseRows");
   npWrap.innerHTML = "";
   for (const m of sf.nomPhrases) addNomPhraseRow(m.input, m.output);
+  // ★M-V13: 精算設定
+  document.getElementById("szRoundWoman").value = CFG.seisan.roundBaseWoman;
+  document.getElementById("szRoundShop").value = CFG.seisan.roundBaseShop;
+  document.getElementById("szAlertMode").value = CFG.seisan.alertMode;
+  document.getElementById("szAlertPercent").value = CFG.seisan.alertFixedPercent;
+  const zf = loadSeisanFormat();
+  document.getElementById("szMsgHeader").value = zf.header;
+  document.getElementById("szMsgFooter").value = zf.footer;
 }
 /* ★M-V12: 属性表示ルール行(属性/指名/表示) */
 function addAttrRuleRow(attr = "", nom = "", output = "") {
@@ -2079,6 +2569,12 @@ document.getElementById("sNomPhraseAdd").addEventListener("click", () => addNomP
 document.getElementById("sSendTplReset").addEventListener("click", () => {
   if (confirm("テンプレートを初期値に戻しますか？")) {
     document.getElementById("sSendTemplate").value = DEFAULT_SEND_FORMAT.therapistTemplate;
+  }
+});
+document.getElementById("szMsgReset").addEventListener("click", () => { // ★M-V13
+  if (confirm("精算送信文のヘッダー/フッターを初期値に戻しますか？")) {
+    document.getElementById("szMsgHeader").value = DEFAULT_SEISAN_FORMAT.header;
+    document.getElementById("szMsgFooter").value = DEFAULT_SEISAN_FORMAT.footer;
   }
 });
 
@@ -2164,16 +2660,29 @@ document.getElementById("setSave").addEventListener("click", () => {
   let sendTemplate = document.getElementById("sSendTemplate").value.replace(/\r\n/g, "\n");
   if (!sendTemplate.trim()) sendTemplate = DEFAULT_SEND_FORMAT.therapistTemplate;
 
+  // ★M-V13: 精算設定
+  const roundWoman = parseInt(document.getElementById("szRoundWoman").value, 10);
+  const roundShop = parseInt(document.getElementById("szRoundShop").value, 10);
+  const alertMode = document.getElementById("szAlertMode").value === "minRate" ? "minRate" : "fixed";
+  const alertPercent = parseInt(document.getElementById("szAlertPercent").value, 10);
+  if (isNaN(roundWoman) || roundWoman < 0 || roundWoman > 999) { alert("女性給 丸め基準値は0〜999で入力してください。"); return; }
+  if (isNaN(roundShop) || roundShop < 0 || roundShop > 999) { alert("店落ち 丸め基準値は0〜999で入力してください。"); return; }
+  if (isNaN(alertPercent) || alertPercent < 0 || alertPercent > 100) { alert("バック率アラートの固定値(%)は0〜100で入力してください。"); return; }
+  let seisanHeader = document.getElementById("szMsgHeader").value.replace(/\r\n/g, "\n");
+  let seisanFooter = document.getElementById("szMsgFooter").value.replace(/\r\n/g, "\n");
+
   const p = loadPrices();
   p.coursePrice = { 60: nums.sp60, 80: nums.sp80, 100: nums.sp100, 120: nums.sp120 };
   p.extensionUnitMinutes = nums.spExtMin;
   p.extensionUnitPrice = nums.spExtPrice;
   savePrices(p);
   saveDiscounts(discounts);
-  const s = { staffs, attrs, nomTypes, options, areas, calc: { prep, defaultInterval: iv, roundTo: round } };
+  const s = { staffs, attrs, nomTypes, options, areas, calc: { prep, defaultInterval: iv, roundTo: round },
+    seisan: { roundBaseWoman: roundWoman, roundBaseShop: roundShop, alertMode, alertFixedPercent: alertPercent } };
   saveSettings(s);
   // ★M-V12: 送信フォーマットの保存(PCと同一のJSON構造)
   saveSendFormat({ therapistTemplate: sendTemplate, attrMap: attrRules, nomPhrases });
+  saveSeisanFormat({ header: seisanHeader, footer: seisanFooter }); // ★M-V13
   CFG = loadSettings();
   // 現在の担当がリストから消えていたらリセット
   if (loadCurrentStaff() && !CFG.staffs.includes(loadCurrentStaff())) saveCurrentStaff("");
@@ -2196,7 +2705,6 @@ function collectDataDump() {
     const k = localStorage.key(i);
     if (!k || !k.startsWith("este.")) continue;
     if (k === "este.sync" || k === "este.syncState") continue; // トークン等は預けない
-    if (k === "este.cti" || k === "este.customers" || k === "este.ctiQueue") continue; // ★M-V13: CTI設定(店舗キー)と顧客キャッシュは預けない(顧客DBはFirebase側が本体)
     dump[k] = localStorage.getItem(k);
   }
   return dump;
@@ -2204,7 +2712,7 @@ function collectDataDump() {
 function applyDataDump(dump) {
   // 同期設定以外の este.* を置き換え
   const keep = {};
-  for (const k of ["este.sync", "este.syncState", "este.cti", "este.customers", "este.ctiQueue"]) {
+  for (const k of ["este.sync", "este.syncState"]) {
     const v = localStorage.getItem(k);
     if (v != null) keep[k] = v;
   }
@@ -2467,554 +2975,6 @@ document.getElementById("impFile").addEventListener("change", async e => {
   e.target.value = "";
 });
 
-/* ================= ★M-V13: 着信連携(CTI)+顧客管理 ================= */
-/* 中継: Firebase Realtime Database(REST + EventSource)。SDK不使用でオフライン動作を維持。
-   データ構造: /stores/<店舗キー>/calls/<pushId> = {number, at}
-              /stores/<店舗キー>/customers/<custId> = {name, phone, attr, memo, createdAt, updatedAt, history:{<予約id>:{d,t,c,e,n}}} */
-
-let ctiPending = null; // {name, last4, custId, at} 着信ポップアップ→予約入力への引き継ぎ
-
-function loadCtiConfig() { return LS.get("este.cti", null); }
-function saveCtiConfig(c) { LS.set("este.cti", c); }
-function ctiReady() {
-  const c = loadCtiConfig();
-  return c && c.dbUrl && c.storeKey ? c : null;
-}
-function normalizePhone(s) {
-  let d = String(s || "").replace(/[^\d+]/g, "");
-  if (d.startsWith("+81")) d = "0" + d.slice(3);
-  return d.replace(/[^\d]/g, "");
-}
-function ctiUrl(path, query) {
-  const c = ctiReady();
-  if (!c) return null;
-  const base = c.dbUrl.replace(/\/+$/, "");
-  let u = `${base}/stores/${encodeURIComponent(c.storeKey)}/${path}.json`;
-  if (query) u += "?" + query;
-  return u;
-}
-async function ctiFetch(path, opts, query) {
-  const u = ctiUrl(path, query);
-  if (!u) throw new Error("CTI未設定");
-  const res = await fetch(u, opts);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-/* ---- 顧客キャッシュ(ローカル。本体はFirebase) ---- */
-function loadCustCache() { return LS.get("este.customers", { list: {}, fetchedAt: 0 }); }
-function saveCustCache(c) { LS.set("este.customers", c); }
-async function fetchAllCustomers(force) {
-  const cache = loadCustCache();
-  if (!force && Date.now() - cache.fetchedAt < 60 * 1000) return cache.list; // 60秒スロットル
-  const data = await ctiFetch("customers", { method: "GET" });
-  const list = data || {};
-  saveCustCache({ list, fetchedAt: Date.now() });
-  return list;
-}
-function custVisitStats(cu) {
-  const hist = Object.entries(cu.history || {})
-    .map(([id, h]) => ({ id, ...h }))
-    .sort((a, b) => (a.d || "").localeCompare(b.d || ""));
-  const byT = {};
-  for (const h of hist) { const t = h.t || "?"; byT[t] = (byT[t] || 0) + 1; }
-  const last = hist.length ? hist[hist.length - 1] : null;
-  return { count: hist.length, byT, last, hist };
-}
-function fmtHistLine(h) {
-  const c = h.c ? `${h.c}分` : "";
-  const e = h.e ? `+延長${h.e}` : "";
-  const n = h.n ? `(${h.n})` : "";
-  return `${h.d || "?"}　${h.t || "?"}　${c}${e}${n}`;
-}
-
-/* ---- 着信照合 ---- */
-async function findCustomerByNumber(num) {
-  const n = normalizePhone(num);
-  if (!n) return null;
-  // 1) ローカルキャッシュ
-  const cache = loadCustCache();
-  for (const [id, cu] of Object.entries(cache.list || {})) {
-    if (cu && normalizePhone(cu.phone) === n) return { id, ...cu };
-  }
-  // 2) Firebaseへ問い合わせ(該当1件のみ取得 = 転送量最小)
-  try {
-    const q = `orderBy=${encodeURIComponent('"phone"')}&equalTo=${encodeURIComponent(JSON.stringify(n))}`;
-    const data = await ctiFetch("customers", { method: "GET" }, q);
-    if (data) {
-      const ids = Object.keys(data);
-      if (ids.length) {
-        const cache2 = loadCustCache();
-        cache2.list[ids[0]] = data[ids[0]];
-        saveCustCache(cache2);
-        return { id: ids[0], ...data[ids[0]] };
-      }
-    }
-  } catch (_) { /* オフライン等は未登録扱いで表示 */ }
-  return null;
-}
-
-/* ---- 着信スタック(連続着信対応)+詳細パネル ---- */
-const ctiPop = document.getElementById("ctiPop");
-const ctiStackEl = document.getElementById("ctiStack");
-let ctiCalls = []; // {id, number, cust, at} 新しい順
-let ctiPopCtx = null; // 詳細表示中の着信
-const CTI_CARD_TTL = 10 * 60 * 1000; // カードは10分で自動消滅
-const CTI_CARD_MAX = 4;
-
-function hideCtiPop() { ctiPop.classList.remove("open"); ctiPopCtx = null; }
-document.getElementById("cpClose").addEventListener("click", hideCtiPop);
-
-function fmtClock(ts) {
-  const d = new Date(ts);
-  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
-function renderCtiStack() {
-  const now = Date.now();
-  ctiCalls = ctiCalls.filter(c => now - c.at < CTI_CARD_TTL).slice(0, CTI_CARD_MAX);
-  ctiStackEl.innerHTML = "";
-  for (const call of ctiCalls) {
-    const card = document.createElement("div");
-    card.className = "cti-card";
-    const nameHtml = call.cust
-      ? `${esc(call.cust.name || "(名前未設定)")}${call.cust.attr ? `<span class="cp-attr">${esc(call.cust.attr)}</span>` : ""}`
-      : "未登録";
-    card.innerHTML =
-      `<span class="cc-ico">📞</span>` +
-      `<span class="cc-main"><span class="cc-name">${nameHtml}</span><br><span class="cc-num">${esc(call.number || "(番号非通知)")}</span></span>` +
-      `<span class="cc-time">${fmtClock(call.at)}</span>` +
-      `<button class="cc-x" aria-label="閉じる">×</button>`;
-    card.querySelector(".cc-x").addEventListener("click", ev => {
-      ev.stopPropagation();
-      ctiCalls = ctiCalls.filter(c => c.id !== call.id);
-      renderCtiStack();
-    });
-    card.addEventListener("click", () => openCtiDetail(call));
-    ctiStackEl.appendChild(card);
-  }
-}
-setInterval(renderCtiStack, 60 * 1000); // 期限切れカードの掃除
-
-function openCtiDetail(call) {
-  ctiPopCtx = call;
-  document.getElementById("cpNum").textContent = call.number || "(番号非通知)";
-  const body = document.getElementById("cpBody");
-  const actBtn = document.getElementById("cpAction");
-  const cust = call.cust;
-  if (cust) {
-    const st = custVisitStats(cust);
-    const byT = Object.entries(st.byT).sort((a, b) => b[1] - a[1]).slice(0, 3)
-      .map(([t, c]) => `${esc(t)}×${c}`).join(" / ");
-    body.innerHTML =
-      `<div class="cp-name">${esc(cust.name || "(名前未設定)")}${cust.attr ? `<span class="cp-attr">${esc(cust.attr)}</span>` : ""}</div>` +
-      `<div class="cp-line">来店 ${st.count}回${byT ? `｜担当別: ${byT}` : ""}</div>` +
-      (st.last ? `<div class="cp-line">前回: ${esc(fmtHistLine(st.last))}</div>` : "") +
-      (cust.memo ? `<div class="cp-memo">${esc(cust.memo)}</div>` : "");
-    actBtn.textContent = "予約フォームを開く";
-  } else {
-    body.innerHTML = `<div class="cp-new">未登録の番号です</div>`;
-    actBtn.textContent = "顧客登録";
-  }
-  ctiPop.classList.add("open");
-}
-document.getElementById("cpAction").addEventListener("click", () => {
-  if (!ctiPopCtx) return;
-  const call = ctiPopCtx;
-  const n = normalizePhone(call.number);
-  if (call.cust) {
-    // 顧客に紐付いた予約フォームを直接開く(担当・時刻は仮値。フォームで変更可)
-    const present = presentTherapists();
-    if (!present.length) {
-      alert("先に出勤登録をしてください。(出勤者がいないため予約フォームを開けません)");
-      return;
-    }
-    ctiPending = { name: call.cust.name || "", last4: n.slice(-4), custId: call.cust.id, at: Date.now() };
-    hideCtiPop();
-    ctiCalls = ctiCalls.filter(c => c.id !== call.id);
-    renderCtiStack();
-    openReservationForm(null, {
-      therapistId: present[0].t.id,
-      startMin: defaultBaseMin(state.dateKey, new Date(), CFG.calc.roundTo)
-    });
-  } else {
-    hideCtiPop();
-    ctiCalls = ctiCalls.filter(c => c.id !== call.id);
-    renderCtiStack();
-    openCustEdit(null, { phone: n });
-  }
-});
-async function onIncomingCall(number, callId) {
-  const n = normalizePhone(number);
-  // 同じ番号の連続着信(2分以内の再コール)は既存カードを最新化して重複させない
-  const dup = ctiCalls.find(c => c.number === n && Date.now() - c.at < 2 * 60 * 1000);
-  if (dup) { dup.at = Date.now(); renderCtiStack(); return; }
-  const cust = await findCustomerByNumber(n);
-  ctiCalls.unshift({ id: callId || newGuid(), number: n, cust, at: Date.now() });
-  renderCtiStack();
-  if (navigator.vibrate) { try { navigator.vibrate(100); } catch (_) {} }
-}
-
-/* ---- 着信ストリーム(EventSource) ---- */
-let ctiES = null;
-let ctiRetry = 0;
-const ctiSeen = new Set();
-const CTI_START = Date.now();
-function startCallStream() {
-  if (ctiES) { ctiES.close(); ctiES = null; }
-  const c = ctiReady();
-  if (!c || typeof EventSource === "undefined") return;
-  const url = ctiUrl("calls", `orderBy=${encodeURIComponent('"$key"')}&limitToLast=1`);
-  const es = new EventSource(url);
-  ctiES = es;
-  const handle = ev => {
-    try {
-      const msg = JSON.parse(ev.data);
-      if (!msg || msg.data == null) return;
-      let entries;
-      if (msg.path === "/") entries = Object.entries(msg.data);           // 初回スナップショット
-      else entries = [[msg.path.replace(/^\//, ""), msg.data]];            // 以後の追加分
-      for (const [id, call] of entries) {
-        if (!call || !call.number || ctiSeen.has(id)) continue;
-        ctiSeen.add(id);
-        const at = Number(call.at) || 0;
-        // アプリ起動の2分以上前の着信は表示しない(古い履歴の再表示防止)
-        if (at && at < CTI_START - 2 * 60 * 1000) continue;
-        onIncomingCall(call.number, id);
-      }
-    } catch (_) {}
-  };
-  es.addEventListener("put", handle);
-  es.addEventListener("patch", handle);
-  es.onopen = () => { ctiRetry = 0; };
-  es.onerror = () => {
-    es.close();
-    if (ctiES === es) ctiES = null;
-    const wait = Math.min(30000, 2000 * Math.pow(2, ctiRetry++));
-    setTimeout(() => { if (!ctiES) startCallStream(); }, wait);
-  };
-}
-async function cleanupOldCalls() {
-  try {
-    const keys = await ctiFetch("calls", { method: "GET" }, "shallow=true");
-    if (!keys) return;
-    const ids = Object.keys(keys).sort(); // pushIDは時系列順
-    if (ids.length <= 30) return;
-    for (const id of ids.slice(0, ids.length - 20)) {
-      await ctiFetch(`calls/${id}`, { method: "DELETE" });
-    }
-  } catch (_) {}
-}
-
-/* ---- 来店履歴の自動追記(予約保存時) ---- */
-function ctiQueue() { return LS.get("este.ctiQueue", []); }
-function ctiQueueSave(q) { LS.set("este.ctiQueue", q); }
-function ctiRecordVisit(r, dateKey) {
-  if (!ctiReady()) return;
-  const last4 = (r.phoneLast4 || "").trim();
-  if (!/^\d{4}$/.test(last4)) return;
-  // 対象顧客: 着信引き継ぎ(custId)を最優先。無ければ下四桁が一致する顧客がキャッシュ上で1人だけの場合のみ
-  let custId = null;
-  if (ctiPending && ctiPending.custId && ctiPending.last4 === last4) {
-    custId = ctiPending.custId;
-    ctiPending = null; // 使い切り
-  } else {
-    const cache = loadCustCache();
-    const hits = Object.entries(cache.list || {})
-      .filter(([, cu]) => cu && normalizePhone(cu.phone).endsWith(last4));
-    if (hits.length === 1) custId = hits[0][0];
-  }
-  if (!custId) return;
-  const entry = {
-    d: dateKey,
-    t: r.therapistId != null ? ((state.therapists.find(t => t.id === r.therapistId) || {}).name || "") : "",
-    c: r.courseMinutes || 0, e: r.extensionMinutes || 0, n: r.nominationType || ""
-  };
-  const q = ctiQueue();
-  q.push({ op: "put", path: `customers/${custId}/history/${r.id}`, body: entry });
-  ctiQueueSave(q);
-  flushCtiQueue();
-}
-function ctiDeleteVisit(resvId) {
-  if (!ctiReady()) return;
-  const cache = loadCustCache();
-  for (const [id, cu] of Object.entries(cache.list || {})) {
-    if (cu && cu.history && cu.history[resvId]) {
-      const q = ctiQueue();
-      q.push({ op: "delete", path: `customers/${id}/history/${resvId}` });
-      ctiQueueSave(q);
-      delete cu.history[resvId];
-      saveCustCache(cache);
-      flushCtiQueue();
-      return;
-    }
-  }
-}
-let ctiFlushing = false;
-async function flushCtiQueue() {
-  if (ctiFlushing || !ctiReady() || !navigator.onLine) return;
-  ctiFlushing = true;
-  try {
-    let q = ctiQueue();
-    while (q.length) {
-      const job = q[0];
-      if (job.op === "put") {
-        await ctiFetch(job.path, { method: "PUT", body: JSON.stringify(job.body) });
-        // キャッシュにも反映
-        const m = job.path.match(/^customers\/([^/]+)\/history\/(.+)$/);
-        if (m) {
-          const cache = loadCustCache();
-          const cu = cache.list[m[1]];
-          if (cu) { cu.history = cu.history || {}; cu.history[m[2]] = job.body; saveCustCache(cache); }
-        }
-      } else if (job.op === "delete") {
-        await ctiFetch(job.path, { method: "DELETE" });
-      }
-      q.shift();
-      ctiQueueSave(q);
-      q = ctiQueue();
-    }
-  } catch (_) { /* オフライン等: 次回起動/オンライン復帰時に再送 */ }
-  ctiFlushing = false;
-}
-window.addEventListener("online", () => { flushCtiQueue(); if (!ctiES) startCallStream(); });
-
-/* ---- 予約フォーム内: 顧客×担当セラピストの履歴表示 (M-V13.1) ---- */
-function formLinkedCustomer() {
-  const last4 = document.getElementById("fPhone").value.trim();
-  if (!/^\d{4}$/.test(last4)) return null;
-  if (ctiPending && ctiPending.custId && ctiPending.last4 === last4) {
-    const cu = loadCustCache().list[ctiPending.custId];
-    if (cu) return { id: ctiPending.custId, ...cu };
-  }
-  const hits = Object.entries(loadCustCache().list || {})
-    .filter(([, cu]) => cu && cu.phone && normalizePhone(cu.phone).endsWith(last4));
-  return hits.length === 1 ? { id: hits[0][0], ...hits[0][1] } : null;
-}
-function updateThInfo() {
-  const box = document.getElementById("fThInfo");
-  if (!ctiReady()) { box.style.display = "none"; return; }
-  const cu = formLinkedCustomer();
-  if (!cu) { box.style.display = "none"; return; }
-  const tid = Number(document.getElementById("fTherapist").value);
-  const t = state.therapists.find(x => x.id === tid);
-  if (!t) { box.style.display = "none"; return; }
-  const st = custVisitStats(cu);
-  const withT = st.hist.filter(h => h.t === t.name);
-  const nm = esc(cu.name || "(名前未設定)");
-  if (withT.length) {
-    const last = withT[withT.length - 1];
-    box.className = "th-info";
-    box.innerHTML = `${nm} × ${esc(t.name)}: 過去 <b>${withT.length}回</b>｜前回 ${esc(fmtHistLine(last))}`;
-  } else {
-    box.className = "th-info first";
-    box.innerHTML = `${nm} は ${esc(t.name)} への指名は<b>初めて</b>です(来店${st.count}回)`;
-  }
-  box.style.display = "block";
-}
-document.getElementById("fTherapist").addEventListener("change", updateThInfo);
-document.getElementById("fPhone").addEventListener("input", updateThInfo);
-
-/* ---- 顧客管理シート ---- */
-const custSheet = document.getElementById("custSheet");
-const custEditSheet = document.getElementById("custEditSheet");
-let custEditId = null;
-document.getElementById("openCustMgmt").addEventListener("click", async () => {
-  closeSheets();
-  if (!ctiReady()) {
-    alert("先に「着信連携設定(CTI)」でFirebaseの接続設定を行ってください。\n(顧客データの保管先として使用します)");
-    return;
-  }
-  openSheet(custSheet);
-  document.getElementById("custSearch").value = "";
-  const st = document.getElementById("custStatus");
-  st.className = "cti-status"; st.textContent = "読み込み中…";
-  try {
-    await fetchAllCustomers(true);
-    const n = Object.keys(loadCustCache().list || {}).length;
-    st.className = "cti-status ok"; st.textContent = `登録顧客: ${n}名(最新)`;
-  } catch (_) {
-    const n = Object.keys(loadCustCache().list || {}).length;
-    st.className = "cti-status ng"; st.textContent = `通信できないため保存済みデータを表示中(${n}名)`;
-  }
-  renderCustList();
-});
-document.getElementById("custSearch").addEventListener("input", renderCustList);
-function renderCustList() {
-  const q = document.getElementById("custSearch").value.trim().toLowerCase();
-  const qNum = normalizePhone(q);
-  const wrap = document.getElementById("custList");
-  const list = Object.entries(loadCustCache().list || {})
-    .map(([id, cu]) => ({ id, ...cu }))
-    .filter(cu => {
-      if (!q) return true;
-      const nameHit = (cu.name || "").toLowerCase().includes(q);
-      const phoneHit = qNum && normalizePhone(cu.phone).includes(qNum);
-      return nameHit || phoneHit;
-    })
-    .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ja"));
-  wrap.innerHTML = "";
-  if (!list.length) {
-    wrap.innerHTML = `<div class="cust-empty">${q ? "一致する顧客がいません" : "右上の「＋新規」から登録してください"}</div>`;
-    return;
-  }
-  for (const cu of list) {
-    const st = custVisitStats(cu);
-    const row = document.createElement("div");
-    row.className = "cust-row";
-    row.innerHTML =
-      `<b>${esc(cu.name || "(名前未設定)")}</b>${cu.attr ? ` <span style="font-size:12px;color:var(--accent);font-weight:700">${esc(cu.attr)}</span>` : ""}` +
-      `<div class="cr-sub">${esc(cu.phone || "番号未登録")}｜来店${st.count}回${st.last ? `｜前回: ${esc(st.last.d || "")} ${esc(st.last.t || "")}` : ""}</div>`;
-    row.addEventListener("click", () => openCustEdit(cu.id));
-    wrap.appendChild(row);
-  }
-}
-document.getElementById("custAdd").addEventListener("click", () => openCustEdit(null));
-function openCustEdit(id, seed) {
-  custEditId = id || null;
-  const cu = id ? loadCustCache().list[id] : null;
-  document.getElementById("ceTitle").childNodes[0].textContent = id ? "顧客編集" : "顧客登録";
-  document.getElementById("ceName").value = cu ? (cu.name || "") : "";
-  document.getElementById("cePhone").value = cu ? (cu.phone || "") : (seed && seed.phone ? seed.phone : "");
-  const attrVals = CFG.attrs.slice();
-  if (cu && cu.attr && !attrVals.includes(cu.attr)) attrVals.unshift(cu.attr);
-  document.getElementById("ceAttr").innerHTML =
-    `<option value=""></option>` + attrVals.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
-  document.getElementById("ceAttr").value = cu ? (cu.attr || "") : "";
-  document.getElementById("ceMemo").value = cu ? (cu.memo || "") : "";
-  const st = cu ? custVisitStats(cu) : { hist: [] };
-  document.getElementById("ceHist").innerHTML = st.hist.length
-    ? st.hist.slice().reverse().map(h => esc(fmtHistLine(h))).join("<br>")
-    : "履歴なし";
-  document.getElementById("ceDelete").style.display = id ? "block" : "none";
-  closeSheets();
-  openSheet(custEditSheet);
-}
-document.getElementById("ceSave").addEventListener("click", async () => {
-  const name = document.getElementById("ceName").value.trim();
-  const phone = normalizePhone(document.getElementById("cePhone").value);
-  if (!name) { alert("名前を入力してください。"); return; }
-  if (phone && !/^\d{10,11}$/.test(phone)) { alert("電話番号は10〜11桁の数字で入力してください。(未入力も可)"); return; }
-  // 番号の重複チェック(別の顧客に同じ番号)
-  if (phone) {
-    const dup = Object.entries(loadCustCache().list || {})
-      .find(([id, cu]) => id !== custEditId && cu && normalizePhone(cu.phone) === phone);
-    if (dup && !confirm(`同じ番号が「${dup[1].name || "(名前未設定)"}」にも登録されています。\nこのまま保存しますか？`)) return;
-  }
-  const body = {
-    name, phone,
-    attr: document.getElementById("ceAttr").value,
-    memo: document.getElementById("ceMemo").value.trim(),
-    updatedAt: Date.now()
-  };
-  try {
-    if (custEditId) {
-      await ctiFetch(`customers/${custEditId}`, { method: "PATCH", body: JSON.stringify(body) });
-      const cache = loadCustCache();
-      cache.list[custEditId] = { ...(cache.list[custEditId] || {}), ...body };
-      saveCustCache(cache);
-    } else {
-      body.createdAt = Date.now();
-      const res = await ctiFetch("customers", { method: "POST", body: JSON.stringify(body) });
-      const cache = loadCustCache();
-      cache.list[res.name] = body; // res.name = 新規push ID
-      saveCustCache(cache);
-    }
-    toast("保存しました");
-    closeSheets();
-    openSheet(custSheet);
-    renderCustList();
-  } catch (err) {
-    alert("保存に失敗しました(通信環境をご確認ください): " + err.message);
-  }
-});
-document.getElementById("ceDelete").addEventListener("click", async () => {
-  if (!custEditId) return;
-  if (!confirm("この顧客を削除しますか？(来店履歴も消えます)")) return;
-  try {
-    await ctiFetch(`customers/${custEditId}`, { method: "DELETE" });
-    const cache = loadCustCache();
-    delete cache.list[custEditId];
-    saveCustCache(cache);
-    toast("削除しました");
-    closeSheets();
-    openSheet(custSheet);
-    renderCustList();
-  } catch (err) {
-    alert("削除に失敗しました: " + err.message);
-  }
-});
-
-/* ---- CTI設定シート ---- */
-const ctiSheet = document.getElementById("ctiSheet");
-document.getElementById("openCtiConfig").addEventListener("click", () => {
-  closeSheets();
-  const c = loadCtiConfig() || {};
-  document.getElementById("ctDbUrl").value = c.dbUrl || "";
-  document.getElementById("ctStoreKey").value = c.storeKey || "";
-  refreshCtiInfo();
-  openSheet(ctiSheet);
-});
-function refreshCtiInfo() {
-  const c = loadCtiConfig();
-  const info = document.getElementById("ctInfo");
-  info.textContent = c && c.dbUrl && c.storeKey ? "設定済み(着信の待ち受け中)" : "未設定です";
-  document.getElementById("ctMacroUrl").textContent =
-    c && c.dbUrl && c.storeKey
-      ? `${c.dbUrl.replace(/\/+$/, "")}/stores/${c.storeKey}/calls.json`
-      : "—";
-}
-document.getElementById("ctGenKey").addEventListener("click", () => {
-  const buf = new Uint8Array(16);
-  crypto.getRandomValues(buf);
-  document.getElementById("ctStoreKey").value =
-    Array.from(buf, b => b.toString(16).padStart(2, "0")).join("");
-});
-function readCtiForm() {
-  let dbUrl = document.getElementById("ctDbUrl").value.trim().replace(/\/+$/, "");
-  const storeKey = document.getElementById("ctStoreKey").value.trim();
-  if (!/^https:\/\/[^\s/]+\.(firebaseio\.com|firebasedatabase\.app)$/.test(dbUrl)) {
-    alert("データベースURLの形式が違います。\n例: https://xxxx-default-rtdb.firebaseio.com\n(Firebaseコンソール > Realtime Database に表示されるURL)");
-    return null;
-  }
-  if (!/^[A-Za-z0-9_-]{16,}$/.test(storeKey)) {
-    alert("店舗キーは半角英数16文字以上にしてください。「自動生成」の使用を推奨します。");
-    return null;
-  }
-  return { dbUrl, storeKey };
-}
-document.getElementById("ctTest").addEventListener("click", async () => {
-  const c = readCtiForm();
-  if (!c) return;
-  const btn = document.getElementById("ctTest");
-  btn.disabled = true; btn.textContent = "テスト中…";
-  try {
-    const u = `${c.dbUrl}/stores/${encodeURIComponent(c.storeKey)}/ping.json`;
-    let res = await fetch(u, { method: "PUT", body: JSON.stringify(Date.now()) });
-    if (!res.ok) throw new Error(`書き込み失敗 (HTTP ${res.status})`);
-    res = await fetch(u);
-    if (!res.ok) throw new Error(`読み取り失敗 (HTTP ${res.status})`);
-    alert("接続OKです。「保存」を押してください。");
-  } catch (err) {
-    alert("接続に失敗しました: " + err.message + "\n\nURL・Firebaseのルール設定をご確認ください(READMEの「着信連携」参照)。");
-  }
-  btn.disabled = false; btn.textContent = "接続テスト";
-});
-document.getElementById("ctSave").addEventListener("click", () => {
-  const c = readCtiForm();
-  if (!c) return;
-  saveCtiConfig(c);
-  refreshCtiInfo();
-  toast("保存しました。着信の待ち受けを開始します");
-  startCallStream();
-  cleanupOldCalls();
-});
-document.getElementById("ctCopyUrl").addEventListener("click", async () => {
-  const t = document.getElementById("ctMacroUrl").textContent;
-  if (!t || t === "—") { toast("先に設定を保存してください"); return; }
-  if (await copyTextToClipboard(t)) toast("コピーしました(MacroDroidに貼り付け)");
-  else alert("コピーできませんでした。長押しでコピーしてください:\n\n" + t);
-});
-
 /* ================= シート共通・トースト ================= */
 function openSheet(sheet) {
   document.getElementById("sheetBg").classList.add("open");
@@ -3048,15 +3008,6 @@ refreshStaffChip();
 
 // クラウド自動受信(設定済み端末のみ・オフライン時はスキップ)
 setTimeout(autoReceive, 300);
-
-// ★M-V13: 着信の待ち受け開始・未送信の履歴を再送(CTI設定済み端末のみ)
-setTimeout(() => {
-  if (ctiReady()) {
-    startCallStream();
-    flushCtiQueue();
-    cleanupOldCalls();
-  }
-}, 600);
 
 // バージョン表示
 {
