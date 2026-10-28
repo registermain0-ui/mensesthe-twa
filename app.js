@@ -14,7 +14,7 @@ const COLUMNS       = (24 * 60) / MINUTE_STEP; // 144
 const COURSES       = [60, 80, 100, 120];
 const SEARCH_COURSES = [60, 80, 100, 120, 140, 160, 180]; // 空枠検索用
 
-const APP_VERSION = "V-24";
+const APP_VERSION = "V-25";
 
 /* ================= 純粋ロジック(移植) ================= */
 
@@ -77,12 +77,20 @@ function mapNowToBizMin(now) {
   return h * 60 + mm10;
 }
 
-// ★V-24: 予約の開始時刻が「最短取得と同じ基準(現在時刻+準備時間)」より前か判定(今日の営業日のみ対象)
-// 基準は最短取得と同じ defaultBaseMin を使うため、最短取得が出す候補時刻では警告になりません。
-// 戻り: {tooSoon:boolean, limitMin:number|null}(limitMin=その日の最短受付可能時刻)
-function checkStartTooSoon(dateKey, startMin, now, prep, roundTo = 5) {
+// ★V-25: 現在時刻を営業分で返す(分単位・丸めなし)。0:00〜5:59は+24時間(24〜29時台)
+function nowBizMinExact(now) {
+  const d = new Date(now);
+  let h = d.getHours();
+  if (h < CUTOFF_HOUR) h += 24;
+  return h * 60 + d.getMinutes();
+}
+
+// ★V-24/V-25: 予約の開始時刻が「現在時刻(分単位)+準備時間」より前か判定(今日の営業日の予約のみ対象)
+// 例: 現在17:28・準備15分 → 17:43より前の開始時刻は警告
+// 戻り: {tooSoon:boolean, limitMin:number|null}(limitMin=現在時刻+準備時間)
+function checkStartTooSoon(dateKey, startMin, now, prep) {
   if (dateKey !== getBusinessDate(now)) return { tooSoon: false, limitMin: null };
-  const limitMin = defaultBaseMin(dateKey, now, roundTo) + (Number.isFinite(prep) ? prep : 0);
+  const limitMin = nowBizMinExact(now) + (Number.isFinite(prep) ? prep : 0);
   return { tooSoon: startMin < limitMin, limitMin };
 }
 
@@ -756,7 +764,7 @@ function buildSeisanMessage(therapistName, summary, fmt) {
 /* ================= Node テスト用エクスポート ================= */
 if (typeof module !== "undefined") {
   module.exports = {
-    parseBizTime, fmtBiz, fmtNormal, getBusinessDate, mapNowToBizMin, defaultBaseMin, checkStartTooSoon,
+    parseBizTime, fmtBiz, fmtNormal, getBusinessDate, mapNowToBizMin, defaultBaseMin, nowBizMinExact, checkStartTooSoon,
     parseIntervalMinutes, tryFindEarliestSlot, maxText, sanName, padName,
     calcEnd, calcTotal, findOverlaps, isOverShiftEnd, holdCellsToRanges, normAttendance,
     reportFormatLine, buildReport, levenshtein, therapistMatches, buildTherapistMemo,
@@ -1837,11 +1845,11 @@ document.getElementById("fSave").addEventListener("click", () => {
   if (isOverShiftEnd(state.attendance, r)) {
     if (!confirm("終了時間が退勤時刻を超過しますが、よろしいですか？")) return;
   }
-  // ★V-24: 開始時刻が「現在時刻+準備時間」より前なら確認(新規登録、または開始時刻を変更した編集のみ)
+  // ★V-24/V-25: 開始時刻が「現在時刻(分単位)+準備時間」より前なら確認(新規登録、または開始時刻を変更した編集のみ)
   if (!old || old.start !== startMin) {
-    const chk = checkStartTooSoon(state.dateKey, startMin, new Date(), CFG.calc.prep, CFG.calc.roundTo);
+    const chk = checkStartTooSoon(state.dateKey, startMin, new Date(), CFG.calc.prep);
     if (chk.tooSoon) {
-      if (!confirm(`開始時刻（${fmtBiz(startMin)}）が、現在時刻＋準備時間${CFG.calc.prep}分で算出した最短時刻（${fmtBiz(chk.limitMin)}）より前になっています。\n\nこのまま登録しますか？`)) return;
+      if (!confirm(`開始時刻（${fmtBiz(startMin)}）が、現在時刻＋準備時間${CFG.calc.prep}分（${fmtBiz(chk.limitMin)}）より前になっています。\n\nこのまま登録しますか？`)) return;
     }
   }
 
